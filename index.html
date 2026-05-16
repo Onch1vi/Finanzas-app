@@ -19,7 +19,7 @@
 <!-- Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@500;600&family=Caveat:wght@500;600;700&display=swap" rel="stylesheet">
 
 <style>
   :root {
@@ -91,6 +91,85 @@
     --warning: #FCD34D; --warning-2: #FBBF24; --warning-glow: rgba(252,211,77,0.18);
     --accent: #FBBF24; --accent-2: #F59E0B; --gold: #F4C77B;
   }
+  [data-theme="studio"] {
+    /* Warm cream / journal aesthetic - inspired by reference UI */
+    --bg: #F4EFE3; --bg-2: #ECE4D0; --surface: #FBF6E9; --surface-2: #FFFFFF; --surface-3: #F0E8D2;
+    --border: #DDD0B5; --border-soft: #E8DDC2; --border-strong: #C4B597;
+    --text: #2D2620; --text-dim: #5E544A; --text-muted: #897F71; --text-faint: #B5A992;
+    --primary: #8B6FBC; --primary-2: #745AA5; --primary-3: #5E4690; --primary-glow: rgba(139,111,188,0.14);
+    --danger: #C75B5B; --danger-2: #B44747; --danger-glow: rgba(199,91,91,0.12);
+    --warning: #C99258; --warning-2: #B07A43; --warning-glow: rgba(201,146,88,0.15);
+    --accent: #C28FA8; --accent-2: #B07395; --gold: #C49A4F;
+    --shadow-xs: 0 1px 2px rgba(60,40,20,0.06);
+    --shadow-sm: 0 2px 6px rgba(60,40,20,0.07), 0 1px 2px rgba(60,40,20,0.04);
+    --shadow-md: 0 6px 20px rgba(60,40,20,0.09), 0 2px 6px rgba(60,40,20,0.05);
+    --shadow-lg: 0 20px 40px -10px rgba(60,40,20,0.14), 0 4px 12px rgba(60,40,20,0.07);
+  }
+  /* Studio-specific tweaks: warmer cards, no harsh dark gradients */
+  [data-theme="studio"] body { background: var(--bg); }
+  [data-theme="studio"] .finanzas-app::before {
+    background: radial-gradient(ellipse 70% 50% at 50% 0%, rgba(139,111,188,0.10), transparent 75%);
+    opacity: 1;
+  }
+  [data-theme="studio"] .card,
+  [data-theme="studio"] .card-elevated {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+  }
+  [data-theme="studio"] .card-elevated {
+    background: linear-gradient(180deg, #FFFDF7 0%, var(--surface) 100%);
+    box-shadow: var(--shadow-md);
+  }
+  [data-theme="studio"] .card-elevated::after { display: none; }
+  [data-theme="studio"] .card-hero {
+    background: linear-gradient(160deg, #FBF6E9 0%, #F4E8D8 60%, #EDDCC4 100%) !important;
+    border: 1px solid var(--border) !important;
+    box-shadow: var(--shadow-lg);
+    color: var(--text);
+  }
+  [data-theme="studio"] .card-hero::before {
+    background: linear-gradient(135deg, rgba(139,111,188,0.06), transparent 30%, transparent 70%, rgba(194,143,168,0.04));
+  }
+  [data-theme="studio"] .glass {
+    background: rgba(251,246,233,0.85);
+    backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--border);
+  }
+  [data-theme="studio"] .display-font {
+    font-weight: 500;
+    letter-spacing: -0.03em;
+  }
+  [data-theme="studio"] .progress-track {
+    background: var(--bg-2) !important;
+    border: 1px solid var(--border-soft);
+  }
+  /* Handwritten Caveat accent (works on all themes) */
+  .handwritten { font-family: 'Caveat', cursive; font-weight: 600; letter-spacing: 0; }
+  .tagline-script {
+    font-family: 'Caveat', cursive;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0;
+    line-height: 1;
+  }
+  /* Sticky-note style for tips in studio */
+  [data-theme="studio"] .tip-note {
+    background: #FFF8E1;
+    border: 1px solid rgba(196,154,79,0.3);
+    box-shadow: 0 2px 4px rgba(60,40,20,0.08);
+    color: #5B4A2E;
+  }
+  [data-theme="studio"] input, [data-theme="studio"] textarea, [data-theme="studio"] select {
+    color-scheme: light !important;
+  }
+  [data-theme="studio"] .input-base {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  [data-theme="studio"] .pill-good { background: rgba(139,111,188,0.10); color: var(--primary-2); border-color: rgba(139,111,188,0.25); }
+
   [data-theme="midnight"] {
     --bg: #07090F; --bg-2: #0B0F1C; --surface: #181E33; --surface-2: #1F2643; --surface-3: #2A3158;
     --border: #2A3158; --border-soft: #181E33; --border-strong: #38406E;
@@ -441,7 +520,15 @@
 <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
 <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- Supabase config: paste your project URL and anon key.
+     If left as PASTE_HERE_..., the app keeps working offline with localStorage only. -->
+<script>
+  window.SUPABASE_URL = 'PASTE_HERE_SUPABASE_URL';
+  window.SUPABASE_ANON_KEY = 'PASTE_HERE_SUPABASE_ANON_KEY';
+</script>
 
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
@@ -451,6 +538,42 @@ const HAS_CHARTS = typeof RC.AreaChart === 'function';
 
 const STORAGE_KEY = 'finanzas-app-v1';
 const TIP_DISMISSED_KEY = 'finanzas-tip-confirm-dismissed';
+
+// ============================================================================
+//  SUPABASE CLIENT (optional cloud sync)
+//  If SUPABASE_URL / SUPABASE_ANON_KEY are set in the head <script>, the app
+//  enables email+password login and syncs your data to a private row.
+//  If not set, it falls back to local-only mode (localStorage).
+// ============================================================================
+const SUPABASE_URL = (typeof window !== 'undefined' && window.SUPABASE_URL) || '';
+const SUPABASE_ANON_KEY = (typeof window !== 'undefined' && window.SUPABASE_ANON_KEY) || '';
+const SUPABASE_CONFIGURED = !!SUPABASE_URL && !!SUPABASE_ANON_KEY
+  && !SUPABASE_URL.startsWith('PASTE_HERE') && !SUPABASE_ANON_KEY.startsWith('PASTE_HERE');
+const supabaseClient = (SUPABASE_CONFIGURED && typeof window !== 'undefined' && window.supabase && window.supabase.createClient)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true } })
+  : null;
+
+// Pull the current user's data row from Supabase. Returns the row or null.
+async function cloudLoadData() {
+  if (!supabaseClient) return null;
+  const { data: { user } } = await supabaseClient.auth.getUser();
+  if (!user) return null;
+  const { data, error } = await supabaseClient.from('user_data').select('data').eq('user_id', user.id).maybeSingle();
+  if (error) { console.error('cloudLoad error', error); return null; }
+  return data ? data.data : null;
+}
+
+// Upsert the current user's data into Supabase. Debounced caller below.
+async function cloudSaveData(payload) {
+  if (!supabaseClient) return { ok: false, reason: 'not-configured' };
+  const { data: { user } } = await supabaseClient.auth.getUser();
+  if (!user) return { ok: false, reason: 'not-logged-in' };
+  const { error } = await supabaseClient
+    .from('user_data')
+    .upsert({ user_id: user.id, data: payload, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+  if (error) { console.error('cloudSave error', error); return { ok: false, reason: error.message }; }
+  return { ok: true };
+}
 
 // ============================================================================
 //  ICONS (Inline SVG)
@@ -1953,6 +2076,9 @@ function Header({ name, hideAmounts, onToggleHide, onOpenNotifications, upcoming
           </p>
           <h1 className="display-font" style={{ fontSize: 28, fontWeight: 500, lineHeight: 1.1, letterSpacing: '-0.03em' }}>
             Hola, <span key={name || 'amigo'} className="animate-fadein" style={{ color: 'var(--primary)', fontWeight: 600, display: 'inline-block' }}>{name || 'amigo'}</span>
+            <span className="tagline-script" style={{ marginLeft: 10, fontSize: 22, color: 'var(--accent)', display: 'inline-block', verticalAlign: 'baseline' }}>
+              tu dinero, claro ✦
+            </span>
           </h1>
         </div>
         <div className="flex gap-2 flex-shrink-0">
@@ -5409,12 +5535,27 @@ function CurrencySelector({ data, onUpdateUser, onUpdateAllAmounts }) {
   );
 }
 
-function SettingsScreen({ data, onUpdateUser, onUpdateSettings, onExport, onExportCalendar, onReset, onRequestNotifications, notifPermission, onUpdateAllAmounts }) {
+function SettingsScreen({ data, onUpdateUser, onUpdateSettings, onExport, onExportCalendar, onReset, onRequestNotifications, notifPermission, onUpdateAllAmounts, session, syncStatus, onLogout }) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [tempName, setTempName] = useState(data.user.name);
+  const [confirmLogout, setConfirmLogout] = useState(false);
   return (
     <div className="px-5 pb-32 space-y-5 stagger">
+      {session && (
+        <div className="animate-slideup card" style={{ padding: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: 'var(--primary-glow)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <CheckCircle2 size={16} color="var(--primary)" />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p className="truncate" style={{ fontSize: 12.5, fontWeight: 600 }}>{session.user.email}</p>
+            <p style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 1 }}>
+              {syncStatus === 'syncing' ? 'Sincronizando…' : syncStatus === 'error' ? 'Error al sincronizar' : 'Sincronizado en la nube'}
+            </p>
+          </div>
+          <button onClick={() => setConfirmLogout(true)} className="btn-ghost" style={{ padding: '7px 12px', borderRadius: 10, fontSize: 11.5, fontWeight: 600 }}>Cerrar sesión</button>
+        </div>
+      )}
       <div className="animate-slideup card-elevated" style={{ padding: 18, display: 'flex', alignItems: 'center', gap: 14 }}>
         <div className="display-font" style={{
           width: 56, height: 56, borderRadius: '50%',
@@ -5468,6 +5609,7 @@ function SettingsScreen({ data, onUpdateUser, onUpdateSettings, onExport, onExpo
               { v: 'forest', l: 'Bosque', swatch: 'linear-gradient(135deg, #84CC16, #65A30D)' },
               { v: 'gold', l: 'Dorado', swatch: 'linear-gradient(135deg, #F59E0B, #D97706)' },
               { v: 'midnight', l: 'Medianoche', swatch: 'linear-gradient(135deg, #818CF8, #6366F1)' },
+              { v: 'studio', l: 'Studio (claro)', swatch: 'linear-gradient(135deg, #F4EFE3, #8B6FBC)' },
             ].map(o => {
               const sel = (data.user.themeOverride || null) === o.v;
               return (
@@ -5544,6 +5686,7 @@ function SettingsScreen({ data, onUpdateUser, onUpdateSettings, onExport, onExpo
       </div>
 
       <ConfirmDialog open={confirmReset} title="¿Borrar todo?" message="Se eliminarán todas tus deudas, ingresos, egresos y configuración. Esta acción es irreversible." onCancel={() => setConfirmReset(false)} onConfirm={() => { setConfirmReset(false); onReset(); }} danger />
+      <ConfirmDialog open={confirmLogout} title="¿Cerrar sesión?" message="Tus datos quedan guardados en la nube. Volverás a verlos cuando inicies sesión de nuevo." onCancel={() => setConfirmLogout(false)} onConfirm={() => { setConfirmLogout(false); onLogout && onLogout(); }} />
     </div>
   );
 }
@@ -5677,6 +5820,125 @@ function QuickTransactionForm({ type, currency, onSave }) {
 // ============================================================================
 //  ROOT APP
 // ============================================================================
+// === AUTH SCREEN (only used when Supabase is configured) ===
+function AuthScreen({ onLoggedIn }) {
+  const [mode, setMode] = useState('login'); // 'login' | 'signup' | 'forgot'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [password2, setPassword2] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [info, setInfo] = useState('');
+
+  const submit = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    setErr(''); setInfo('');
+    if (!email.trim()) { setErr('Escribe tu correo'); return; }
+    if (mode !== 'forgot' && password.length < 6) { setErr('La contraseña debe tener al menos 6 caracteres'); return; }
+    if (mode === 'signup' && password !== password2) { setErr('Las contraseñas no coinciden'); return; }
+    setBusy(true);
+    try {
+      if (mode === 'login') {
+        const { error } = await supabaseClient.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) throw error;
+        if (onLoggedIn) onLoggedIn();
+      } else if (mode === 'signup') {
+        const { data, error } = await supabaseClient.auth.signUp({ email: email.trim(), password });
+        if (error) throw error;
+        if (data && data.session) {
+          if (onLoggedIn) onLoggedIn();
+        } else {
+          setInfo('Revisa tu correo para confirmar la cuenta. Después vuelve aquí e inicia sesión.');
+          setMode('login');
+        }
+      } else if (mode === 'forgot') {
+        const { error } = await supabaseClient.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+        if (error) throw error;
+        setInfo('Te enviamos un correo para restablecer la contraseña.');
+        setMode('login');
+      }
+    } catch (e2) {
+      setErr(e2.message || 'No se pudo procesar');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="finanzas-app min-h-screen flex flex-col safe-top safe-bottom" style={{ padding: '24px 24px 0' }}>
+      <div className="flex-1 flex flex-col justify-center" style={{ maxWidth: 420, margin: '0 auto', width: '100%' }}>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 18 }}>
+          <span style={{ width: 5, height: 5, borderRadius: 999, background: 'var(--primary)', boxShadow: '0 0 8px var(--primary)' }} />
+          <span style={{ fontSize: 11, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.2em', fontWeight: 600 }}>Finanzas</span>
+        </div>
+        <h1 className="display-font" style={{ fontSize: 36, lineHeight: 1.05, fontWeight: 500, marginBottom: 6, letterSpacing: '-0.035em' }}>
+          {mode === 'login' ? 'Inicia sesión' : mode === 'signup' ? 'Crea tu cuenta' : 'Recuperar contraseña'}
+        </h1>
+        <p className="tagline-script" style={{ fontSize: 22, marginBottom: 24 }}>
+          tus datos, en todos tus dispositivos
+        </p>
+
+        <form onSubmit={submit} className="space-y-3">
+          <div>
+            <span style={{ display: 'block', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>Correo</span>
+            <input type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)}
+              placeholder="tu@correo.com"
+              className="input-base w-full"
+              style={{ borderRadius: 14, padding: '14px 16px', fontSize: 15.5 }} />
+          </div>
+          {mode !== 'forgot' && (
+            <div>
+              <span style={{ display: 'block', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>Contraseña</span>
+              <input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                value={password} onChange={e => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="input-base w-full"
+                style={{ borderRadius: 14, padding: '14px 16px', fontSize: 15.5 }} />
+            </div>
+          )}
+          {mode === 'signup' && (
+            <div>
+              <span style={{ display: 'block', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>Repite la contraseña</span>
+              <input type="password" autoComplete="new-password"
+                value={password2} onChange={e => setPassword2(e.target.value)}
+                placeholder="••••••••"
+                className="input-base w-full"
+                style={{ borderRadius: 14, padding: '14px 16px', fontSize: 15.5 }} />
+            </div>
+          )}
+
+          {err && (
+            <div className="rounded-xl p-3 text-xs" style={{ background: 'var(--danger-glow)', border: '1px solid rgba(248,113,113,0.25)', color: 'var(--danger)' }}>{err}</div>
+          )}
+          {info && (
+            <div className="rounded-xl p-3 text-xs" style={{ background: 'var(--primary-glow)', border: '1px solid rgba(52,211,153,0.25)', color: 'var(--text-dim)' }}>{info}</div>
+          )}
+
+          <button type="submit" disabled={busy} className="btn-primary w-full" style={{ borderRadius: 14, padding: '14px 0', fontSize: 15.5, fontWeight: 600, marginTop: 6 }}>
+            {busy ? 'Procesando…' : mode === 'login' ? 'Entrar' : mode === 'signup' ? 'Crear cuenta' : 'Enviar correo'}
+          </button>
+        </form>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 18, fontSize: 12.5 }}>
+          {mode === 'login' ? (
+            <>
+              <button onClick={() => { setMode('signup'); setErr(''); setInfo(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}>Crear cuenta</button>
+              <button onClick={() => { setMode('forgot'); setErr(''); setInfo(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>Olvidé mi contraseña</button>
+            </>
+          ) : (
+            <button onClick={() => { setMode('login'); setErr(''); setInfo(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}>← Volver a iniciar sesión</button>
+          )}
+        </div>
+
+        <p style={{ marginTop: 32, fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.5 }}>
+          Tus datos viven en tu cuenta privada — solo tú los ves.<br/>
+          Se sincronizan automáticamente entre tus dispositivos.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function FinanzasApp() {
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState('home');
@@ -5685,6 +5947,11 @@ function FinanzasApp() {
   const [payDebtSheet, setPayDebtSheet] = useState(null);
   const [quickAdd, setQuickAdd] = useState(null);
   const [notifPermission, setNotifPermission] = useState('default');
+  // Auth & cloud sync state (only meaningful if SUPABASE_CONFIGURED)
+  const [session, setSession] = useState(null);
+  const [authChecking, setAuthChecking] = useState(SUPABASE_CONFIGURED);
+  const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'syncing' | 'synced' | 'error'
+  const cloudSaveTimerRef = useRef(null);
 
   const [data, setData] = useState({
     user: { name: '', currency: 'COP', themeOverride: null },
@@ -5699,7 +5966,7 @@ function FinanzasApp() {
   // Apply theme: explicit override wins over auto-detection
   const activeTheme = useMemo(() => {
     const override = data.user.themeOverride;
-    const validThemes = ['default', 'feminine', 'ocean', 'sunset', 'forest', 'gold', 'midnight'];
+    const validThemes = ['default', 'feminine', 'ocean', 'sunset', 'forest', 'gold', 'midnight', 'studio'];
     // null/undefined = automatic; explicit string (including 'default') = manual choice
     if (override !== null && override !== undefined && validThemes.includes(override)) return override;
     return isFeminineName(data.user.name) ? 'feminine' : 'default';
@@ -5709,6 +5976,7 @@ function FinanzasApp() {
     const themeColors = {
       default: '#07090F', feminine: '#110C19', ocean: '#04111E',
       sunset: '#170B11', forest: '#07120E', gold: '#110E08', midnight: '#07090F',
+      studio: '#F4EFE3',
     };
     if (activeTheme && activeTheme !== 'default') {
       document.body.setAttribute('data-theme', activeTheme);
@@ -5719,43 +5987,109 @@ function FinanzasApp() {
     if (meta) meta.setAttribute('content', themeColors[activeTheme] || '#07090F');
   }, [activeTheme]);
 
-  useEffect(() => {
-    try {
-      const raw = safeStorage.get(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        // Keep only confirmations from last 6 months to prevent storage bloat
-        const cleanConfirmations = {};
-        if (parsed.confirmations) {
-          const now = new Date();
-          const cutoff = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-          Object.keys(parsed.confirmations).forEach(monthKey => {
-            const [yr, mo] = monthKey.split('-').map(Number);
-            if (!isNaN(yr) && !isNaN(mo)) {
-              const monthDate = new Date(yr, mo - 1, 1);
-              if (monthDate >= cutoff) cleanConfirmations[monthKey] = parsed.confirmations[monthKey];
-            }
-          });
+  // Helper: merge a payload into the data model with sensible defaults
+  const applyPayload = (parsed) => {
+    const cleanConfirmations = {};
+    if (parsed && parsed.confirmations) {
+      const now = new Date();
+      const cutoff = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+      Object.keys(parsed.confirmations).forEach(monthKey => {
+        const [yr, mo] = monthKey.split('-').map(Number);
+        if (!isNaN(yr) && !isNaN(mo)) {
+          const monthDate = new Date(yr, mo - 1, 1);
+          if (monthDate >= cutoff) cleanConfirmations[monthKey] = parsed.confirmations[monthKey];
         }
-        setData(prev => ({
-          ...prev,
-          ...parsed,
-          plans: parsed.plans || [],
-          confirmations: cleanConfirmations,
-          savings: {
-            current: 0, goal: 0, goalDate: '', emergencyMonths: 3,
-            lifeBudgetPct: 0.15, bufferPct: 0.10, minLifeBudget: 0,
-            currentBalance: 0, balanceUpdatedAt: '',
-            ...(parsed.savings || {}),
-          },
-        }));
-      }
-    } catch (e) { console.error(e); }
-    finally { setLoaded(true); }
-    if (typeof Notification !== 'undefined') setNotifPermission(Notification.permission);
+      });
+    }
+    setData(prev => ({
+      ...prev,
+      ...(parsed || {}),
+      plans: (parsed && parsed.plans) || [],
+      confirmations: cleanConfirmations,
+      savings: {
+        current: 0, goal: 0, goalDate: '', emergencyMonths: 3,
+        lifeBudgetPct: 0.15, bufferPct: 0.10, minLifeBudget: 0,
+        currentBalance: 0, balanceUpdatedAt: '',
+        ...((parsed && parsed.savings) || {}),
+      },
+    }));
+  };
+
+  // Auth state listener (no-op when Supabase is not configured)
+  useEffect(() => {
+    if (!supabaseClient) { setAuthChecking(false); return; }
+    let mounted = true;
+    supabaseClient.auth.getSession().then(({ data: { session: s } }) => {
+      if (!mounted) return;
+      setSession(s);
+      setAuthChecking(false);
+    });
+    const { data: sub } = supabaseClient.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+    });
+    return () => { mounted = false; if (sub && sub.subscription) sub.subscription.unsubscribe(); };
   }, []);
 
-  const saveData = useCallback((newData) => { safeStorage.set(STORAGE_KEY, JSON.stringify(newData)); }, []);
+  // Data load: cloud first (if logged in), then local fallback. Migrates local → cloud on first login.
+  useEffect(() => {
+    if (authChecking) return;
+    let cancelled = false;
+    (async () => {
+      // Always read localStorage first (fast paint)
+      let local = null;
+      try {
+        const raw = safeStorage.get(STORAGE_KEY);
+        if (raw) local = JSON.parse(raw);
+      } catch (e) {}
+
+      if (supabaseClient && session) {
+        setSyncStatus('syncing');
+        const cloud = await cloudLoadData();
+        if (cancelled) return;
+        if (cloud && Object.keys(cloud).length > 0) {
+          applyPayload(cloud);
+          try { safeStorage.set(STORAGE_KEY, JSON.stringify(cloud)); } catch (e) {}
+          setSyncStatus('synced');
+        } else if (local) {
+          // First-time login on this user: push local → cloud
+          applyPayload(local);
+          const r = await cloudSaveData(local);
+          setSyncStatus(r.ok ? 'synced' : 'error');
+        } else {
+          applyPayload(null);
+          setSyncStatus('synced');
+        }
+      } else {
+        applyPayload(local);
+      }
+      setLoaded(true);
+    })();
+    if (typeof Notification !== 'undefined') setNotifPermission(Notification.permission);
+    return () => { cancelled = true; };
+  }, [session, authChecking]);
+
+  // saveData: always write localStorage; if cloud + logged in, debounce a cloud upsert
+  const saveData = useCallback((newData) => {
+    try { safeStorage.set(STORAGE_KEY, JSON.stringify(newData)); } catch (e) {}
+    if (supabaseClient && session) {
+      setSyncStatus('syncing');
+      if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current);
+      cloudSaveTimerRef.current = setTimeout(async () => {
+        const r = await cloudSaveData(newData);
+        setSyncStatus(r.ok ? 'synced' : 'error');
+      }, 1200);
+    }
+  }, [session]);
+
+  const handleLogout = async () => {
+    if (!supabaseClient) return;
+    await supabaseClient.auth.signOut();
+    setSession(null);
+    // Clear local cache so the next user starts fresh
+    try { safeStorage.remove(STORAGE_KEY); } catch (e) {}
+    setLoaded(false);
+    setToast('Sesión cerrada');
+  };
   const updateData = useCallback((updater) => {
     setData(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
@@ -6005,6 +6339,21 @@ function FinanzasApp() {
     }).length;
   }, [data.debts]);
 
+  // While checking auth, show loader
+  if (authChecking) {
+    return (
+      <div className="finanzas-app min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 mx-auto mb-3 rounded-full animate-pulse" style={{ background: 'var(--primary-glow)' }} />
+          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>Conectando...</p>
+        </div>
+      </div>
+    );
+  }
+  // If Supabase is configured but the user is not logged in, show the auth screen
+  if (SUPABASE_CONFIGURED && !session) {
+    return <AuthScreen onLoggedIn={() => { /* session listener will pick it up */ }} />;
+  }
   if (!loaded) {
     return (
       <div className="finanzas-app min-h-screen flex items-center justify-center">
@@ -6033,7 +6382,7 @@ function FinanzasApp() {
         {tab === 'debts' && <DebtsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveDebt} onDelete={handleDeleteDebt} onArchive={handleArchiveDebt} onPay={handlePayDebt} />}
         {tab === 'movements' && <MovementsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveMovement} onDelete={handleDeleteMovement} onBulkAdd={handleBulkAddExpenses} />}
         {tab === 'projection' && <PlanesScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onUpdateSavings={handleUpdateSavings} onSavePlan={handleSavePlan} onDeletePlan={handleDeletePlan} />}
-        {tab === 'settings' && <SettingsScreen data={data} onUpdateUser={(u) => updateData(prev => ({ ...prev, user: { ...prev.user, ...u } }))} onUpdateSettings={(s) => updateData(prev => ({ ...prev, settings: { ...prev.settings, ...s } }))} onExport={handleExport} onExportCalendar={handleExportCalendar} onReset={handleReset} onRequestNotifications={handleRequestNotifs} notifPermission={notifPermission} />}
+        {tab === 'settings' && <SettingsScreen data={data} onUpdateUser={(u) => updateData(prev => ({ ...prev, user: { ...prev.user, ...u } }))} onUpdateSettings={(s) => updateData(prev => ({ ...prev, settings: { ...prev.settings, ...s } }))} onExport={handleExport} onExportCalendar={handleExportCalendar} onReset={handleReset} onRequestNotifications={handleRequestNotifs} notifPermission={notifPermission} session={session} syncStatus={syncStatus} onLogout={handleLogout} />}
         <BottomNav active={tab} onChange={setTab} />
         <Sheet open={notifSheetOpen} onClose={() => setNotifSheetOpen(false)} title="Próximos pagos" size="md">
           <NotificationsList data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onPay={(d) => setPayDebtSheet(d)} onClose={() => setNotifSheetOpen(false)} />
