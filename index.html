@@ -1793,6 +1793,285 @@ const generateICS = (data) => {
 };;
 
 // ============================================================================
+//  FINANCIAL ADVISOR
+//  Builds a concrete, actionable financial plan from the user's data:
+//  - Overall health (critical / tight / stable / healthy)
+//  - Step-by-step priority list with specific amounts and dates
+//  - Leaks: expenses that could be cut (subscriptions, duplicates, leisure)
+//  - Debt strategy: avalanche with specific months and interest savings
+//  - Monthly allocation: how to split your surplus
+// ============================================================================
+function buildFinancialAdvice(data, currency) {
+  const out = {
+    health: 'healthy',
+    steps: [],
+    leaks: [],
+    debtStrategy: null,
+    monthlyAllocation: null,
+    summary: '',
+  };
+
+  const today = new Date(); today.setHours(0,0,0,0);
+  const monthlyIncome = (data.incomes || []).filter(i => i.active).reduce((s,i) => s + getMonthlyEquivalent(i), 0);
+  const monthlyExpense = (data.expenses || []).filter(e => e.active).reduce((s,e) => s + getMonthlyEquivalent(e), 0);
+  const activeDebts = (data.debts || []).filter(d => !d.archived && (d.totalAmount - (d.paidAmount || 0)) > 0);
+  const monthlyDebtMin = activeDebts
+    .filter(d => !isDebtFutureStart(d, today))
+    .reduce((s,d) => s + (d.minimumPayment || 0), 0);
+  const surplus = monthlyIncome - monthlyExpense - monthlyDebtMin;
+  const cashOnHand = (data.savings && data.savings.currentBalance) || 0;
+  const formalSavings = (data.savings && data.savings.current) || 0;
+  const totalLiquid = cashOnHand + formalSavings;
+  const emergencyMonths = (data.savings && data.savings.emergencyMonths) || 3;
+  const emergencyTarget = monthlyExpense * emergencyMonths;
+  const goal = (data.savings && data.savings.goal) || 0;
+  const goalDate = data.savings && data.savings.goalDate ? new Date(data.savings.goalDate) : null;
+  const lifeBudgetPct = (data.savings && data.savings.lifeBudgetPct) || 0.15;
+  const minLifeBudget = (data.savings && data.savings.minLifeBudget) || 0;
+
+  // === HEALTH ASSESSMENT ===
+  if (surplus < 0) out.health = 'critical';
+  else if (surplus < monthlyExpense * 0.08) out.health = 'tight';
+  else if (totalLiquid < emergencyTarget) out.health = 'stable';
+  else out.health = 'healthy';
+
+  // === MONTHLY ALLOCATION ===
+  if (surplus >= 0) {
+    // Life money first
+    let lifeMoney = Math.max(minLifeBudget, surplus * lifeBudgetPct);
+    lifeMoney = Math.min(lifeMoney, surplus);
+    let remaining = surplus - lifeMoney;
+
+    // Priority of remaining: emergency fund → high-interest debt extra → goal → invest
+    let toEmergency = 0, toDebtExtra = 0, toGoal = 0, toInvest = 0;
+    const emergencyGap = Math.max(0, emergencyTarget - totalLiquid);
+    const highInterestDebts = activeDebts.filter(d => (d.interestRate || 0) >= 20);
+
+    if (emergencyGap > 0 && remaining > 0) {
+      // Aim to fill emergency in 6 months max
+      toEmergency = Math.min(remaining, Math.max(emergencyGap / 6, remaining * 0.4));
+      remaining -= toEmergency;
+    }
+    if (highInterestDebts.length > 0 && remaining > 0) {
+      toDebtExtra = remaining * 0.6;
+      remaining -= toDebtExtra;
+    }
+    if (goal > formalSavings && remaining > 0) {
+      toGoal = remaining;
+      remaining = 0;
+    } else if (remaining > 0) {
+      toInvest = remaining;
+    }
+    out.monthlyAllocation = {
+      income: monthlyIncome,
+      fixedExpenses: monthlyExpense,
+      debtMinimums: monthlyDebtMin,
+      surplus,
+      lifeMoney: Math.round(lifeMoney),
+      toEmergency: Math.round(toEmergency),
+      toDebtExtra: Math.round(toDebtExtra),
+      toGoal: Math.round(toGoal),
+      toInvest: Math.round(toInvest),
+    };
+  } else {
+    out.monthlyAllocation = {
+      income: monthlyIncome,
+      fixedExpenses: monthlyExpense,
+      debtMinimums: monthlyDebtMin,
+      surplus,
+      lifeMoney: 0, toEmergency: 0, toDebtExtra: 0, toGoal: 0, toInvest: 0,
+    };
+  }
+
+  // === LEAKS: expenses easy to cut ===
+  // 1. Many subscriptions
+  const subs = (data.expenses || []).filter(e => e.active && e.category === 'subscriptions');
+  if (subs.length >= 3) {
+    const total = subs.reduce((s,e) => s + getMonthlyEquivalent(e), 0);
+    out.leaks.push({
+      type: 'subscriptions',
+      title: `${subs.length} suscripciones activas`,
+      amount: total,
+      potentialSavings: Math.round(total * 0.4),
+      detail: `Pagas ${formatMoney(total, currency)}/mes en suscripciones. Quedarte solo con las 2 que más usas te ahorraría ~${formatMoney(total * 0.4, currency)}/mes.`,
+      items: subs.map(s => s.name),
+    });
+  }
+  // 2. High leisure spend (>15% of income)
+  const leisure = (data.expenses || []).filter(e => e.active && e.category === 'leisure');
+  if (leisure.length > 0) {
+    const total = leisure.reduce((s,e) => s + getMonthlyEquivalent(e), 0);
+    if (total > monthlyIncome * 0.15 && monthlyIncome > 0) {
+      out.leaks.push({
+        type: 'leisure',
+        title: 'Ocio gasta más del 15% del ingreso',
+        amount: total,
+        potentialSavings: Math.round(total * 0.3),
+        detail: `${formatMoney(total, currency)}/mes en ocio (${(total/monthlyIncome*100).toFixed(0)}% del ingreso). Bajar a 10% del ingreso libera ~${formatMoney(total * 0.3, currency)}/mes.`,
+        items: leisure.map(e => e.name),
+      });
+    }
+  }
+  // 3. Food delivery patterns (heuristic: any expense in 'food' > 25% of income)
+  const foodExpenses = (data.expenses || []).filter(e => e.active && e.category === 'food');
+  const foodTotal = foodExpenses.reduce((s,e) => s + getMonthlyEquivalent(e), 0);
+  if (foodTotal > monthlyIncome * 0.25 && monthlyIncome > 0) {
+    out.leaks.push({
+      type: 'food',
+      title: 'Comida absorbe más del 25% del ingreso',
+      amount: foodTotal,
+      potentialSavings: Math.round(foodTotal * 0.25),
+      detail: `${formatMoney(foodTotal, currency)}/mes en alimentación. Mercado en casa vs. domicilios: cocinar 4 cenas/semana libera ~${formatMoney(foodTotal * 0.25, currency)}/mes.`,
+      items: foodExpenses.map(e => e.name),
+    });
+  }
+
+  // === DEBT STRATEGY (Avalanche: highest interest first) ===
+  if (activeDebts.length > 0) {
+    const sorted = [...activeDebts].sort((a, b) => (b.interestRate || 0) - (a.interestRate || 0));
+    const debtPlan = sorted.map(d => {
+      const sched = simulateDebtPayoff(d, today);
+      const lastEntry = sched[sched.length - 1];
+      const lastDate = lastEntry ? new Date(lastEntry.year, lastEntry.monthIdx, 1) : null;
+      const totalInterest = sched.reduce((s, m) => s + (m.interest || 0), 0);
+      // Accelerated scenario: pay double
+      const accel = simulateDebtPayoff({ ...d, minimumPayment: (d.minimumPayment || 0) * 2 }, today);
+      const accelLast = accel[accel.length - 1];
+      const accelDate = accelLast ? new Date(accelLast.year, accelLast.monthIdx, 1) : null;
+      const accelInterest = accel.reduce((s, m) => s + (m.interest || 0), 0);
+      const interestSaved = totalInterest - accelInterest;
+      return {
+        debt: d, monthsMin: sched.length, monthsDouble: accel.length,
+        endDateMin: lastDate, endDateDouble: accelDate,
+        interestPaying: Math.round(totalInterest),
+        interestSavedDouble: Math.round(interestSaved),
+        infeasible: sched._infeasible === true,
+      };
+    });
+    out.debtStrategy = {
+      method: 'avalanche',
+      plan: debtPlan,
+      totalInterest: debtPlan.reduce((s, d) => s + d.interestPaying, 0),
+      firstTarget: debtPlan[0],
+    };
+  }
+
+  // === STEP-BY-STEP PRIORITY PLAN ===
+  // Step 1: If negative cashflow, fix it first
+  if (surplus < 0) {
+    const gap = -surplus;
+    const fixHints = [];
+    if (out.leaks.length > 0) {
+      const savable = out.leaks.reduce((s, l) => s + l.potentialSavings, 0);
+      if (savable >= gap * 0.7) {
+        fixHints.push(`Cortando los "gastos hormiga" detectados abajo recuperas ~${formatMoney(savable, currency)}/mes — casi cierra la brecha.`);
+      }
+    }
+    if (cashOnHand < gap * 2) fixHints.push('Tu efectivo no aguanta más de 1-2 meses así. Es urgente.');
+    out.steps.push({
+      n: 1, icon: '🚨', priority: 'urgent', color: 'var(--danger)',
+      title: 'Cierra la brecha del mes',
+      action: `Gastas ${formatMoney(gap, currency)} más de lo que entra cada mes`,
+      how: fixHints.length > 0 ? fixHints.join(' ') : `Reduce gastos por al menos ${formatMoney(gap, currency)}/mes o busca un ingreso extra. Mira la sección de fugas abajo.`,
+      amountPerMonth: gap,
+    });
+  }
+
+  // Step 2: High-interest debt (≥20%)
+  if (out.debtStrategy && out.debtStrategy.plan.some(p => (p.debt.interestRate || 0) >= 20)) {
+    const target = out.debtStrategy.plan.find(p => (p.debt.interestRate || 0) >= 20);
+    const dbt = target.debt;
+    const monthlyInterest = (dbt.totalAmount - (dbt.paidAmount || 0)) * (dbt.interestRate || 0) / 100 / 12;
+    out.steps.push({
+      n: out.steps.length + 1, icon: '🔥', priority: 'high', color: 'var(--danger)',
+      title: `Ataca primero: ${dbt.name}`,
+      action: `Interés ${(dbt.interestRate || 0).toFixed(1)}% anual · pierdes ${formatMoney(monthlyInterest, currency)}/mes solo en intereses`,
+      how: target.infeasible
+        ? `⚠️ La cuota mínima (${formatMoney(dbt.minimumPayment, currency)}) no cubre los intereses. Tu deuda crece sola. Sube la cuota o renegocia urgentemente.`
+        : `Pagando solo la mínima (${formatMoney(dbt.minimumPayment, currency)}) tomas ${target.monthsMin} meses y pagas ${formatMoney(target.interestPaying, currency)} en intereses. Si pagas el doble (${formatMoney(dbt.minimumPayment * 2, currency)}/mes), terminas en ${target.monthsDouble} meses y ahorras ${formatMoney(target.interestSavedDouble, currency)} de intereses. Listo: ${target.endDateDouble ? formatDate(target.endDateDouble) : 'fecha por calcular'}.`,
+      amountPerMonth: dbt.minimumPayment * 2,
+      target: dbt.id,
+    });
+  }
+
+  // Step 3: Build emergency fund
+  if (totalLiquid < emergencyTarget && monthlyExpense > 0) {
+    const gap = emergencyTarget - totalLiquid;
+    const monthlyContrib = surplus > 0 ? Math.min(surplus * 0.4, gap / 4) : 0;
+    const monthsNeeded = monthlyContrib > 0 ? Math.ceil(gap / monthlyContrib) : null;
+    const targetDate = monthsNeeded ? new Date(today.getFullYear(), today.getMonth() + monthsNeeded, 1) : null;
+    out.steps.push({
+      n: out.steps.length + 1, icon: '🛟', priority: 'high', color: 'var(--warning)',
+      title: 'Construye tu colchón de emergencia',
+      action: `Necesitas ${formatMoney(emergencyTarget, currency)} (= ${emergencyMonths} meses de tus gastos) · te faltan ${formatMoney(gap, currency)}`,
+      how: monthlyContrib > 0
+        ? `Aporta ${formatMoney(monthlyContrib, currency)}/mes a una cuenta de ahorros SEPARADA (no la del día a día). En ${monthsNeeded} meses lo logras — ${targetDate ? formatDate(targetDate) : ''}. Abre la cuenta hoy: Nu, Bancolombia Ahorro a la Mano, Rappipay o cualquier banco digital.`
+        : `Sin excedente positivo, primero corta gastos. Luego destina al colchón el 40% de cualquier excedente que generes.`,
+      amountPerMonth: Math.round(monthlyContrib),
+    });
+  }
+
+  // Step 4: Pay the rest of debts (medium interest)
+  if (out.debtStrategy && out.debtStrategy.plan.some(p => (p.debt.interestRate || 0) > 0 && (p.debt.interestRate || 0) < 20) && !out.steps.find(s => s.icon === '🔥')) {
+    const medDebts = out.debtStrategy.plan.filter(p => (p.debt.interestRate || 0) < 20 && !p.infeasible);
+    if (medDebts.length > 0) {
+      const last = medDebts[medDebts.length - 1];
+      out.steps.push({
+        n: out.steps.length + 1, icon: '💳', priority: 'medium', color: 'var(--warning)',
+        title: 'Acaba con las deudas restantes',
+        action: `${medDebts.length} deuda${medDebts.length !== 1 ? 's' : ''} con interés moderado`,
+        how: `Mantén las mínimas de todas. Cuando termines la deuda más cara (paso anterior), toma esa cuota y aplícala a la siguiente (método "bola de nieve invertida"). Quedarás libre de deudas el ${last.endDateMin ? formatDate(last.endDateMin) : 'próximo año'} si mantienes esto.`,
+      });
+    }
+  }
+
+  // Step 5: Goal-specific savings
+  if (goal > 0 && totalLiquid >= emergencyTarget) {
+    const gap = goal - formalSavings;
+    if (gap > 0) {
+      let monthlyContrib;
+      if (goalDate && goalDate > today) {
+        const monthsToGoal = (goalDate.getFullYear() - today.getFullYear()) * 12 + (goalDate.getMonth() - today.getMonth());
+        monthlyContrib = monthsToGoal > 0 ? gap / monthsToGoal : gap;
+      } else if (surplus > 0) {
+        monthlyContrib = surplus * 0.3;
+      } else {
+        monthlyContrib = 0;
+      }
+      out.steps.push({
+        n: out.steps.length + 1, icon: '🎯', priority: 'medium', color: 'var(--primary)',
+        title: `Ahorra para tu meta: ${formatMoney(goal, currency)}`,
+        action: goalDate ? `Para ${formatDate(goalDate)}` : 'Sin fecha objetivo definida',
+        how: monthlyContrib > 0
+          ? `Aporta ${formatMoney(monthlyContrib, currency)}/mes. Idealmente programado el día de pago para que no lo veas. Considera un CDT/T-Bills al ${data.user.currency === 'COP' ? '~11% efectivo anual en CO' : '~4-5% en USD'} si tu meta es a más de 1 año.`
+          : 'Define primero un excedente positivo o una fecha para calcular el monto.',
+        amountPerMonth: Math.round(monthlyContrib),
+      });
+    }
+  }
+
+  // Step 6: Invest excess
+  if (totalLiquid >= emergencyTarget && (!out.debtStrategy || out.debtStrategy.plan.every(p => (p.debt.interestRate || 0) < 10)) && surplus > monthlyExpense * 0.2) {
+    const invest = Math.round(surplus * 0.3);
+    out.steps.push({
+      n: out.steps.length + 1, icon: '📈', priority: 'low', color: 'var(--primary)',
+      title: 'Pon tu plata a trabajar',
+      action: `Tienes ${formatMoney(invest, currency)}/mes que puedes invertir sin afectar tu vida`,
+      how: `Considera: 60% en un fondo indexado de bajo costo (Trii, Tyba, Bancolombia Renta Variable), 30% en CDT a 12 meses para liquidez, 10% en algo de mayor riesgo si te interesa explorar. Antes: pregúntale a tu banco por el cobro de comisiones — son la trampa #1.`,
+      amountPerMonth: invest,
+    });
+  }
+
+  // === SUMMARY ===
+  if (out.health === 'critical') out.summary = `Mes a mes pierdes ${formatMoney(-surplus, currency)}. Es urgente cortar gastos. Empieza por el paso 1.`;
+  else if (out.health === 'tight') out.summary = `Vives al límite — tu margen mensual es de solo ${formatMoney(surplus, currency)}. Un imprevisto te tumba. Construye colchón antes que cualquier otra meta.`;
+  else if (out.health === 'stable') out.summary = `Tu flujo está sano (margen ${formatMoney(surplus, currency)}/mes) pero te falta colchón. Termina de armarlo y después atacas metas grandes.`;
+  else out.summary = `Estás en buen camino: flujo sano y colchón listo. Es hora de invertir el excedente y trabajar metas específicas.`;
+
+  return out;
+}
+
+// ============================================================================
 //  PRIMITIVES
 // ============================================================================
 function Sheet({ open, onClose, title, children, size = 'md' }) {
@@ -2344,6 +2623,129 @@ function KeyDatesCard({ goalReachDate, debtFreeDate, dailySim, savings, currency
   );
 }
 
+// === FINANCIAL ADVISOR CARD ===
+// Comprehensive step-by-step financial plan based on user's full data.
+function FinancialAdvisorCard({ data, currency, hideAmounts, onNavigate }) {
+  const [expanded, setExpanded] = useState(false);
+  const advice = useMemo(() => buildFinancialAdvice(data, currency), [data, currency]);
+  const fmt = (n) => formatMoney(n, currency, hideAmounts);
+  const healthColors = {
+    critical: { bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.3)', text: 'var(--danger)', label: 'Crítico' },
+    tight: { bg: 'rgba(251,191,36,0.10)', border: 'rgba(251,191,36,0.3)', text: 'var(--warning)', label: 'Apretado' },
+    stable: { bg: 'var(--primary-glow)', border: 'rgba(139,111,188,0.3)', text: 'var(--accent)', label: 'Estable' },
+    healthy: { bg: 'var(--primary-glow)', border: 'rgba(52,211,153,0.3)', text: 'var(--primary)', label: 'Sano' },
+  };
+  const hc = healthColors[advice.health] || healthColors.stable;
+  const hasContent = advice.steps.length > 0 || advice.leaks.length > 0;
+
+  if (!hasContent && advice.health === 'healthy') {
+    return null; // Nothing actionable to show
+  }
+
+  return (
+    <div className="animate-slideup card-elevated" style={{ padding: 18, position: 'relative', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div className="flex items-center gap-2">
+          <Sparkles size={14} color="var(--accent)" />
+          <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Tu asesor</span>
+        </div>
+        <span style={{ padding: '3px 10px', borderRadius: 999, background: hc.bg, border: `1px solid ${hc.border}`, fontSize: 10.5, fontWeight: 700, color: hc.text, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{hc.label}</span>
+      </div>
+      <p className="display-font" style={{ fontSize: 18, fontWeight: 500, letterSpacing: '-0.02em', lineHeight: 1.35, marginBottom: 14 }}>
+        {advice.summary}
+      </p>
+
+      {/* Steps preview (first 2 always visible, rest behind expand) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {(expanded ? advice.steps : advice.steps.slice(0, 2)).map((step) => (
+          <div key={step.n} className="rounded-xl" style={{ padding: 12, background: 'var(--surface-2)', border: `1px solid var(--border)` }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <div style={{ width: 28, height: 28, borderRadius: 8, background: `${step.color}22`, color: step.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 13, fontWeight: 700 }}>
+                {step.n}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 3 }}>
+                  <span style={{ marginRight: 6 }}>{step.icon}</span>{step.title}
+                </p>
+                <p style={{ fontSize: 11.5, color: 'var(--text-dim)', marginBottom: 6, lineHeight: 1.45 }}>{step.action}</p>
+                <p style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>
+                  <strong style={{ color: step.color, fontWeight: 600 }}>Cómo: </strong>{step.how}
+                </p>
+                {step.amountPerMonth > 0 && (
+                  <p className="tabular" style={{ marginTop: 8, fontSize: 11.5, fontWeight: 600, color: step.color }}>
+                    {fmt(step.amountPerMonth)}/mes
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Leaks section, when expanded */}
+      {expanded && advice.leaks.length > 0 && (
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-soft)' }}>
+          <p style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 10 }}>
+            💧 Fugas detectadas
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {advice.leaks.map((leak, i) => (
+              <div key={i} className="rounded-xl" style={{ padding: 12, background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.18)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 4 }}>
+                  <p style={{ fontSize: 13, fontWeight: 600 }}>{leak.title}</p>
+                  <p className="tabular" style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--primary)', whiteSpace: 'nowrap' }}>
+                    +{fmt(leak.potentialSavings)}/mes
+                  </p>
+                </div>
+                <p style={{ fontSize: 11.5, color: 'var(--text-dim)', lineHeight: 1.45 }}>{leak.detail}</p>
+                {leak.items && leak.items.length > 0 && (
+                  <p style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 4 }}>
+                    Implicados: {leak.items.slice(0, 4).join(' · ')}{leak.items.length > 4 ? '…' : ''}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Monthly allocation when expanded */}
+      {expanded && advice.monthlyAllocation && advice.monthlyAllocation.surplus > 0 && (
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-soft)' }}>
+          <p style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 10 }}>
+            🍰 Reparto sugerido del excedente ({fmt(advice.monthlyAllocation.surplus)}/mes)
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {[
+              { label: 'Vivir (salir, antojos, hobbies)', amount: advice.monthlyAllocation.lifeMoney, color: 'var(--accent)' },
+              { label: 'Colchón de emergencia', amount: advice.monthlyAllocation.toEmergency, color: 'var(--warning)' },
+              { label: 'Pago extra a deudas', amount: advice.monthlyAllocation.toDebtExtra, color: 'var(--danger)' },
+              { label: 'Meta de ahorro', amount: advice.monthlyAllocation.toGoal, color: 'var(--primary)' },
+              { label: 'Invertir', amount: advice.monthlyAllocation.toInvest, color: 'var(--primary-2)' },
+            ].filter(r => r.amount > 0).map((row, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: 'var(--surface-2)', borderRadius: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{row.label}</span>
+                <span className="tabular" style={{ fontSize: 12.5, fontWeight: 600, color: row.color }}>{fmt(row.amount)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {advice.steps.length > 2 || advice.leaks.length > 0 ? (
+        <button onClick={() => setExpanded(!expanded)} className="w-full" style={{
+          marginTop: 14, background: 'none', border: 'none', cursor: 'pointer',
+          fontSize: 12, fontWeight: 600, color: 'var(--primary)',
+          padding: '8px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+        }}>
+          {expanded ? 'Ver menos' : `Ver plan completo (${advice.steps.length} pasos${advice.leaks.length > 0 ? ` · ${advice.leaks.length} fugas` : ''})`}
+          <ChevronRight size={13} style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(0)', transition: 'transform 0.2s' }} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTransaction, onConfirm, onConfirmDebt }) {
   const { debts, incomes, expenses, transactions } = data;
 
@@ -2834,6 +3236,9 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
 
       {/* === REAL BALANCE TODAY: live cash on hand + day-by-day simulation === */}
       <RealBalanceCard sim={dailySim} savings={data.savings} currency={currency} hideAmounts={hideAmounts} onNavigate={onNavigate} />
+
+      {/* === FINANCIAL ADVISOR: step-by-step plan with specific amounts === */}
+      <FinancialAdvisorCard data={data} currency={currency} hideAmounts={hideAmounts} onNavigate={onNavigate} />
 
       {/* === KEY DATES: when goal reached, when debt-free, when stable === */}
       <KeyDatesCard goalReachDate={goalReachDate} debtFreeDate={debtFreeDate} dailySim={dailySim} savings={data.savings} currency={currency} hideAmounts={hideAmounts} />
@@ -3625,7 +4030,7 @@ function MovementsScreen({ data, currency, hideAmounts, onSave, onDelete, onBulk
       <button onClick={() => setCreating(true)} className="fab" aria-label={`Añadir ${type}`}><Plus size={24} strokeWidth={2.5} /></button>
 
       <Sheet open={creating || !!editing} onClose={() => { setCreating(false); setEditing(null); }} title={editing ? `Editar ${type === 'income' ? 'ingreso' : 'egreso'}` : `Nuevo ${type === 'income' ? 'ingreso' : 'egreso'}`} size="lg">
-        <MovementForm type={type} initial={editing} currency={currency} onSave={(item) => { onSave(type, item); setCreating(false); setEditing(null); }} onDelete={editing ? () => { onDelete(type, editing.id); setEditing(null); } : null} />
+        <MovementForm type={type} initial={editing} currency={currency} onSave={(item, opts) => { onSave(type, item, opts); setCreating(false); setEditing(null); }} onDelete={editing ? () => { onDelete(type, editing.id); setEditing(null); } : null} />
       </Sheet>
       <Sheet open={servicesOpen} onClose={() => setServicesOpen(false)} title="Servicios rápidos" size="lg">
         <ServicesSetup currency={currency} existing={data.expenses} onSave={(items) => { onBulkAdd(items); setServicesOpen(false); }} />
@@ -3694,27 +4099,52 @@ function ServicesSetup({ currency, existing, onSave }) {
 
 function MovementForm({ type, initial, currency, onSave, onDelete }) {
   const today = new Date().toISOString().slice(0, 10);
+  const todayDate = new Date(); todayDate.setHours(0,0,0,0);
+  // Default anchor: today (means "next payment is today" → day-of-month = today's day)
   const defaultForm = {
     id: uid(), name: '', amount: 0, category: CATEGORIES[type][0].id,
-    frequency: 'monthly', dayOfMonth: 1, active: true,
+    frequency: 'monthly', dayOfMonth: new Date().getDate(),
+    anchorDate: today, // NEW: real date that anchors the recurring schedule
+    active: true,
     adjustForBusinessDay: type === 'income',
     firstPayment: { month: 6, day: 30 }, secondPayment: { month: 12, day: 20 },
     annualMonth: 12,
     onceDate: today,
   };
-  const [form, setForm] = useState(initial ? { ...defaultForm, ...initial } : defaultForm);
+  // Backfill anchorDate for items created before this field existed
+  const initialFilled = initial ? { ...defaultForm, ...initial } : defaultForm;
+  if (initial && !initial.anchorDate && (initial.frequency === 'monthly' || initial.frequency === 'biweekly' || !initial.frequency)) {
+    const d = initial.dayOfMonth || 1;
+    initialFilled.anchorDate = new Date(todayDate.getFullYear(), todayDate.getMonth(), Math.min(d, 28)).toISOString().slice(0, 10);
+  }
+  const [form, setForm] = useState(initialFilled);
+  const [paidThisMonth, setPaidThisMonth] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const update = (k, v) => setForm(s => ({ ...s, [k]: v }));
+  // Sync dayOfMonth with anchorDate so the rest of the app keeps working
+  const updateAnchor = (isoDate) => {
+    if (!isoDate) { update('anchorDate', ''); return; }
+    const parts = isoDate.split('-').map(Number);
+    const day = parts[2] || 1;
+    setForm(s => ({ ...s, anchorDate: isoDate, dayOfMonth: day }));
+  };
   const updatePayment = (which, k, v) => setForm(s => ({ ...s, [which]: { ...s[which], [k]: v } }));
   const valid = form.name.trim() && form.amount > 0 && (form.frequency !== 'once' || form.onceDate);
   const monthlyEq = getMonthlyEquivalent(form);
   const nextDate = useMemo(() => { try { return getNextOccurrenceDate(form); } catch (e) { return null; } }, [form]);
+  // Has the day-of-month already passed for the current month?
+  const dayAlreadyPassed = useMemo(() => {
+    if (form.frequency !== 'monthly') return false;
+    const d = Math.min(form.dayOfMonth || 1, 28);
+    return d < todayDate.getDate();
+  }, [form.dayOfMonth, form.frequency]);
   const monthOptions = [
     {value:1,label:'Enero'},{value:2,label:'Febrero'},{value:3,label:'Marzo'},{value:4,label:'Abril'},
     {value:5,label:'Mayo'},{value:6,label:'Junio'},{value:7,label:'Julio'},{value:8,label:'Agosto'},
     {value:9,label:'Septiembre'},{value:10,label:'Octubre'},{value:11,label:'Noviembre'},{value:12,label:'Diciembre'},
   ];
   const usePrimaPreset = () => setForm(s => ({ ...s, name: s.name || 'Prima', frequency: 'biannual', firstPayment: { month: 6, day: 30 }, secondPayment: { month: 12, day: 20 } }));
+  const submit = () => onSave(form, { paidThisMonth: paidThisMonth && (form.frequency === 'monthly' || form.frequency === 'biweekly') });
 
   return (
     <div className="space-y-4">
@@ -3768,8 +4198,30 @@ function MovementForm({ type, initial, currency, onSave, onDelete }) {
       )}
 
       {(form.frequency === 'monthly' || form.frequency === 'biweekly') && (
-        <div className="grid grid-cols-1 gap-3 animate-fadein">
-          <div><span className="text-xs font-medium block mb-1.5 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Día del mes</span><DayInput value={form.dayOfMonth} onChange={v => update('dayOfMonth', v)} /></div>
+        <div className="space-y-3 animate-fadein">
+          <div>
+            <span className="text-xs font-medium block mb-1.5 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Fecha de {type === 'income' ? 'cobro' : 'pago'}</span>
+            <input type="date" value={form.anchorDate || ''} onChange={e => updateAnchor(e.target.value)}
+              className="input-base w-full rounded-xl px-4 py-3 text-base"
+              style={{ colorScheme: 'dark' }} />
+            <p className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)' }}>
+              Pon la fecha del próximo {type === 'income' ? 'cobro' : 'pago'}. El día <strong style={{ color: 'var(--text)' }}>{form.dayOfMonth}</strong> de cada mes se repetirá. Si pones una fecha pasada (ej. el {type === 'income' ? 'salario' : 'arriendo'} ya entró/saliste este mes), abajo te preguntamos si ya pasó.
+            </p>
+          </div>
+
+          {dayAlreadyPassed && (
+            <label className="flex items-start justify-between gap-3 p-3 rounded-xl" style={{ background: paidThisMonth ? 'var(--primary-glow)' : 'var(--surface)', border: paidThisMonth ? '1px solid var(--primary)' : '1px solid var(--border)' }}>
+              <div className="flex-1">
+                <span className="text-sm font-medium block">¿Ya {type === 'income' ? 'lo recibiste' : 'lo pagaste'} este mes?</span>
+                <span className="text-[11px] block mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Hoy es {todayDate.getDate()} y la fecha de {type === 'income' ? 'cobro' : 'pago'} fue el {form.dayOfMonth}. Marca sí para que no aparezca como vencido.
+                </span>
+              </div>
+              <button type="button" onClick={() => setPaidThisMonth(!paidThisMonth)} className="relative flex-shrink-0" style={{ width: '2.75rem', height: '1.5rem', borderRadius: '9999px', background: paidThisMonth ? 'var(--primary)' : 'var(--border)', border: 'none' }}>
+                <span style={{ position: 'absolute', top: '2px', left: '2px', width: '1.25rem', height: '1.25rem', borderRadius: '9999px', background: '#fff', transition: 'transform 0.2s', transform: paidThisMonth ? 'translateX(20px)' : 'translateX(0)' }} />
+              </button>
+            </label>
+          )}
         </div>
       )}
 
@@ -3829,7 +4281,7 @@ function MovementForm({ type, initial, currency, onSave, onDelete }) {
         </div>
       )}
 
-      <button onClick={() => onSave(form)} disabled={!valid} className="btn-primary w-full rounded-2xl py-3.5 text-base font-semibold">{initial ? 'Guardar cambios' : 'Crear'}</button>
+      <button onClick={submit} disabled={!valid} className="btn-primary w-full rounded-2xl py-3.5 text-base font-semibold">{initial ? 'Guardar cambios' : 'Crear'}</button>
       {onDelete && (
         <>
           <button onClick={() => setConfirmDel(true)} className="w-full rounded-2xl py-3 text-sm font-medium" style={{ background: 'var(--danger-glow)', color: 'var(--danger)', border: '1px solid rgba(248,113,113,0.2)' }}>Eliminar</button>
@@ -6234,14 +6686,31 @@ function FinanzasApp() {
     });
     setToast(`Pago de ${formatMoney(amount, data.user.currency)} registrado`);
   };
-  const handleSaveMovement = (type, item) => {
+  const handleSaveMovement = (type, item, opts = {}) => {
     updateData(prev => {
       const key = type === 'income' ? 'incomes' : 'expenses';
       const exists = prev[key].find(x => x.id === item.id);
       const list = exists ? prev[key].map(x => x.id === item.id ? item : x) : [...prev[key], item];
-      return { ...prev, [key]: list };
+      let next = { ...prev, [key]: list };
+      // Auto-confirm this month's payment if requested ("ya pagué este mes")
+      if (opts && opts.paidThisMonth) {
+        const now = new Date();
+        const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        const confirmKey = `${type === 'income' ? 'inc' : 'exp'}-${item.id}-${monthKey}`;
+        const monthConfirms = { ...(prev.confirmations[monthKey] || {}) };
+        monthConfirms[confirmKey] = {
+          confirmedAt: new Date().toISOString(),
+          amount: item.amount,
+          name: item.name,
+          autoMarked: true,
+        };
+        next.confirmations = { ...prev.confirmations, [monthKey]: monthConfirms };
+      }
+      return next;
     });
-    setToast(type === 'income' ? 'Ingreso guardado' : 'Egreso guardado');
+    setToast(opts && opts.paidThisMonth
+      ? (type === 'income' ? 'Guardado y marcado como recibido' : 'Guardado y marcado como pagado')
+      : (type === 'income' ? 'Ingreso guardado' : 'Egreso guardado'));
   };
   const handleBulkAddExpenses = (items) => {
     updateData(prev => {
