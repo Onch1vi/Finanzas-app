@@ -24,6 +24,8 @@
 <!-- App icon (inline SVG converted) -->
 <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxODAgMTgwIj48cmVjdCB3aWR0aD0iMTgwIiBoZWlnaHQ9IjE4MCIgcng9IjQwIiBmaWxsPSIjMEEwRTFBIi8+PHRleHQgeD0iOTAiIHk9IjEwOCIgZm9udC1mYW1pbHk9InNlcmlmIiBmb250LXNpemU9IjcwIiBmb250LXdlaWdodD0iNjAwIiBmaWxsPSIjMzREMzk5IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj4kPC90ZXh0Pjwvc3ZnPg==">
 
+<!-- PWA manifest: lets users install the app on iOS/Android/Desktop -->
+<link rel="manifest" href="/manifest.webmanifest">
 <!-- Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -564,26 +566,80 @@ const supabaseClient = (SUPABASE_CONFIGURED && typeof window !== 'undefined' && 
   ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true } })
   : null;
 
-// Pull the current user's data row from Supabase. Returns the row or null.
+// Pull the current user's data row from Supabase. Returns { data, updatedAt } or null.
 async function cloudLoadData() {
   if (!supabaseClient) return null;
   const { data: { user } } = await supabaseClient.auth.getUser();
   if (!user) return null;
-  const { data, error } = await supabaseClient.from('user_data').select('data').eq('user_id', user.id).maybeSingle();
+  const { data, error } = await supabaseClient.from('user_data').select('data, updated_at').eq('user_id', user.id).maybeSingle();
   if (error) { console.error('cloudLoad error', error); return null; }
-  return data ? data.data : null;
+  return data ? { data: data.data, updatedAt: data.updated_at } : null;
 }
 
-// Upsert the current user's data into Supabase. Debounced caller below.
-async function cloudSaveData(payload) {
+// Upsert the current user's data into Supabase with optimistic concurrency.
+// If `expectedUpdatedAt` is provided, we only write when the cloud's current
+// updated_at matches it — that way, another device's later write won't be lost.
+// Returns { ok, conflict, latest } where `latest` is the newer cloud row on conflict.
+async function cloudSaveData(payload, expectedUpdatedAt) {
   if (!supabaseClient) return { ok: false, reason: 'not-configured' };
   const { data: { user } } = await supabaseClient.auth.getUser();
   if (!user) return { ok: false, reason: 'not-logged-in' };
-  const { error } = await supabaseClient
+
+  const now = new Date().toISOString();
+
+  // Check current cloud version first to detect concurrent edits
+  if (expectedUpdatedAt) {
+    const current = await cloudLoadData();
+    if (current && current.updatedAt && current.updatedAt !== expectedUpdatedAt) {
+      // Another device wrote since we last loaded
+      return { ok: false, conflict: true, latest: current };
+    }
+  }
+
+  const { data, error } = await supabaseClient
     .from('user_data')
-    .upsert({ user_id: user.id, data: payload, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+    .upsert({ user_id: user.id, data: payload, updated_at: now }, { onConflict: 'user_id' })
+    .select('updated_at')
+    .single();
   if (error) { console.error('cloudSave error', error); return { ok: false, reason: error.message }; }
-  return { ok: true };
+  return { ok: true, updatedAt: data ? data.updated_at : now };
+}
+
+// Supabase MFA (TOTP) helpers — enable Two-Factor Authentication with an
+// authenticator app like Google Authenticator / Microsoft Authenticator / Authy.
+async function mfaListFactors() {
+  if (!supabaseClient) return { totp: [] };
+  const { data, error } = await supabaseClient.auth.mfa.listFactors();
+  if (error) return { totp: [] };
+  return data || { totp: [] };
+}
+async function mfaEnrollTotp() {
+  if (!supabaseClient) throw new Error('Supabase no configurado');
+  const { data, error } = await supabaseClient.auth.mfa.enroll({ factorType: 'totp', friendlyName: 'Finanzas TOTP' });
+  if (error) throw error;
+  return data; // { id, type, totp: { qr_code, secret, uri } }
+}
+async function mfaVerifyEnrollment(factorId, code) {
+  if (!supabaseClient) throw new Error('Supabase no configurado');
+  const { data: ch, error: chErr } = await supabaseClient.auth.mfa.challenge({ factorId });
+  if (chErr) throw chErr;
+  const { data, error } = await supabaseClient.auth.mfa.verify({ factorId, challengeId: ch.id, code });
+  if (error) throw error;
+  return data;
+}
+async function mfaUnenroll(factorId) {
+  if (!supabaseClient) throw new Error('Supabase no configurado');
+  const { data, error } = await supabaseClient.auth.mfa.unenroll({ factorId });
+  if (error) throw error;
+  return data;
+}
+async function mfaChallengeAndVerify(factorId, code) {
+  if (!supabaseClient) throw new Error('Supabase no configurado');
+  const { data: ch, error: chErr } = await supabaseClient.auth.mfa.challenge({ factorId });
+  if (chErr) throw chErr;
+  const { data, error } = await supabaseClient.auth.mfa.verify({ factorId, challengeId: ch.id, code });
+  if (error) throw error;
+  return data;
 }
 
 // ============================================================================
@@ -1941,6 +1997,28 @@ function buildFinancialAdvice(data, currency) {
       });
     }
   }
+  // 2b. Categories that exceeded their user-defined budget
+  if (data.budgets && Object.keys(data.budgets).length > 0) {
+    const today = new Date();
+    const monthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    Object.entries(data.budgets).forEach(([catId, limit]) => {
+      if (!limit || limit <= 0) return;
+      const spent = getCategorySpend(data, catId, monthKey);
+      if (spent <= limit) return;
+      const cat = getCategory('expense', catId);
+      if (!cat) return;
+      const over = spent - limit;
+      out.leaks.push({
+        type: 'budget-over',
+        title: `${cat.name} sobre tope`,
+        amount: spent,
+        potentialSavings: Math.round(over),
+        detail: `Te pusiste un tope de ${formatMoney(limit, currency)}/mes en ${cat.name}, pero ya llevas ${formatMoney(spent, currency)} (${formatMoney(over, currency)} encima). Identifica qué disparó el gasto este mes y ajusta antes del próximo.`,
+        items: (data.expenses || []).filter(e => e.active && e.category === catId).map(e => e.name),
+      });
+    });
+  }
+
   // 3. Food delivery patterns (heuristic: any expense in 'food' > 25% of income)
   const foodExpenses = (data.expenses || []).filter(e => e.active && e.category === 'food');
   const foodTotal = foodExpenses.reduce((s,e) => s + getMonthlyEquivalent(e), 0);
@@ -2107,6 +2185,146 @@ function buildFinancialAdvice(data, currency) {
   else out.summary = `Estás en buen camino: flujo sano y colchón listo. Es hora de invertir el excedente y trabajar metas específicas.`;
 
   return out;
+}
+
+// ============================================================================
+//  BUDGETS — per-category monthly limit
+//  Stored in data.budgets = { 'food': 1500000, 'leisure': 300000, ... }
+//  Spending tracked from BOTH the recurring monthly equivalent AND any
+//  one-time expenses confirmed for the current month.
+// ============================================================================
+function getCategorySpend(data, categoryId, monthKey) {
+  // monthKey: 'YYYY-MM'
+  let total = 0;
+  const [yr, mo] = (monthKey || '').split('-').map(Number);
+  if (!yr || !mo) return 0;
+  const monthStart = new Date(yr, mo - 1, 1);
+  const monthEnd = new Date(yr, mo, 0);
+  (data.expenses || []).filter(e => e.active && e.category === categoryId).forEach(e => {
+    const freq = e.frequency || 'monthly';
+    if (freq === 'monthly') total += e.amount || 0;
+    else if (freq === 'biweekly') total += (e.amount || 0) * 2;
+    else if (freq === 'weekly') total += (e.amount || 0) * 4;
+    else if (freq === 'biannual') {
+      [e.firstPayment, e.secondPayment].forEach(p => {
+        if (p && p.month === mo) total += (e.amount || 0);
+      });
+    } else if (freq === 'annual' && e.annualMonth === mo) {
+      total += e.amount || 0;
+    } else if (freq === 'once' && e.onceDate) {
+      const d = parseLocalDate(e.onceDate);
+      if (d && d >= monthStart && d <= monthEnd) total += e.amount || 0;
+    }
+  });
+  return total;
+}
+
+function getBudgetStatus(data, categoryId, monthKey) {
+  const limit = (data.budgets || {})[categoryId];
+  if (!limit) return null;
+  const spent = getCategorySpend(data, categoryId, monthKey);
+  const pct = limit > 0 ? (spent / limit) * 100 : 0;
+  return { limit, spent, pct, over: spent > limit, remaining: Math.max(0, limit - spent) };
+}
+
+// ============================================================================
+//  CSV EXPORT
+//  Generates a CSV string with all incomes, expenses, debts and confirmed
+//  transactions. Useful for taxes, bookkeeping, or sharing with an accountant.
+// ============================================================================
+function escapeCsvCell(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+function generateCSV(data) {
+  const lines = [];
+  // Header section: incomes
+  lines.push('Tipo,Nombre,Categoría,Monto,Frecuencia,Día/Fecha,Activo,Notas');
+  (data.incomes || []).forEach(i => {
+    const cat = getCategory('income', i.category);
+    let when = '';
+    if (i.frequency === 'once') when = i.onceDate || '';
+    else if (i.frequency === 'biannual') {
+      when = `1ro: ${(i.firstPayment||{}).month||'-'}/${(i.firstPayment||{}).day||'-'} · 2do: ${(i.secondPayment||{}).month||'-'}/${(i.secondPayment||{}).day||'-'}`;
+    } else if (i.frequency === 'annual') {
+      when = `${i.annualMonth||'-'}/${i.dayOfMonth||'-'}`;
+    } else {
+      when = `Día ${i.dayOfMonth || '-'}`;
+    }
+    lines.push([
+      'Ingreso', escapeCsvCell(i.name), escapeCsvCell(cat ? cat.name : ''),
+      i.amount || 0, i.frequency || 'monthly', escapeCsvCell(when),
+      i.active ? 'sí' : 'no', escapeCsvCell(i.notes || ''),
+    ].join(','));
+  });
+  (data.expenses || []).forEach(e => {
+    const cat = getCategory('expense', e.category);
+    let when = '';
+    if (e.frequency === 'once') when = e.onceDate || '';
+    else if (e.frequency === 'biannual') {
+      when = `1ro: ${(e.firstPayment||{}).month||'-'}/${(e.firstPayment||{}).day||'-'} · 2do: ${(e.secondPayment||{}).month||'-'}/${(e.secondPayment||{}).day||'-'}`;
+    } else if (e.frequency === 'annual') {
+      when = `${e.annualMonth||'-'}/${e.dayOfMonth||'-'}`;
+    } else {
+      when = `Día ${e.dayOfMonth || '-'}`;
+    }
+    lines.push([
+      'Egreso', escapeCsvCell(e.name), escapeCsvCell(cat ? cat.name : ''),
+      e.amount || 0, e.frequency || 'monthly', escapeCsvCell(when),
+      e.active ? 'sí' : 'no', escapeCsvCell(e.notes || ''),
+    ].join(','));
+  });
+
+  // Debts section
+  lines.push('');
+  lines.push('--- DEUDAS ---');
+  lines.push('Nombre,Acreedor,Total,Pagado,Restante,Cuota mínima,Día de pago,Interés %,Empieza,Archivada,Notas');
+  (data.debts || []).forEach(d => {
+    const rem = (d.totalAmount || 0) - (d.paidAmount || 0);
+    lines.push([
+      escapeCsvCell(d.name), escapeCsvCell(d.creditor || ''),
+      d.totalAmount || 0, d.paidAmount || 0, rem,
+      d.minimumPayment || 0, d.paymentDay || '', d.interestRate || 0,
+      d.startDate || '', d.archived ? 'sí' : 'no',
+      escapeCsvCell(d.notes || ''),
+    ].join(','));
+  });
+
+  // Confirmed transactions (this month + history)
+  lines.push('');
+  lines.push('--- MOVIMIENTOS CONFIRMADOS ---');
+  lines.push('Mes,Tipo,Nombre,Monto,Fecha confirmación');
+  const confirmations = data.confirmations || {};
+  Object.keys(confirmations).sort().forEach(monthKey => {
+    const m = confirmations[monthKey];
+    Object.keys(m).forEach(key => {
+      const c = m[key];
+      const type = key.startsWith('inc-') ? 'Ingreso' : key.startsWith('exp-') ? 'Egreso' : key.startsWith('debt-') ? 'Pago deuda' : 'Otro';
+      lines.push([
+        monthKey, type, escapeCsvCell(c.name || ''), c.amount || 0, c.confirmedAt || '',
+      ].join(','));
+    });
+  });
+
+  // Manual transactions
+  if ((data.transactions || []).length > 0) {
+    lines.push('');
+    lines.push('--- REGISTROS MANUALES ---');
+    lines.push('Fecha,Tipo,Monto,Categoría,Notas');
+    data.transactions.forEach(t => {
+      lines.push([
+        t.date || '', t.type || '', t.amount || 0,
+        escapeCsvCell(t.category || ''), escapeCsvCell(t.notes || ''),
+      ].join(','));
+    });
+  }
+
+  return '﻿' + lines.join('\r\n'); // BOM for Excel UTF-8 detection
 }
 
 // ============================================================================
@@ -3945,11 +4163,62 @@ function PayDebtForm({ debt, currency, onPay }) {
 // ============================================================================
 //  MOVEMENTS
 // ============================================================================
-function MovementsScreen({ data, currency, hideAmounts, onSave, onDelete, onBulkAdd }) {
+// === BudgetEditor: small sheet to set a monthly limit on an expense category ===
+function BudgetEditor({ categoryName, color, currentLimit, currentSpend, currency, onSave, onClear }) {
+  const [amount, setAmount] = useState(currentLimit);
+  const remaining = amount > 0 ? Math.max(0, amount - currentSpend) : 0;
+  const over = amount > 0 && currentSpend > amount;
+  const pct = amount > 0 ? Math.min(100, (currentSpend / amount) * 100) : 0;
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, marginBottom: 6 }}>Este mes en {categoryName}</p>
+        <p className="display-font tabular" style={{ fontSize: 24, fontWeight: 500, color: 'var(--text)' }}>{formatMoney(currentSpend, currency)}</p>
+        {currentLimit > 0 && (
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Tope actual: {formatMoney(currentLimit, currency)}</p>
+        )}
+      </div>
+
+      <div>
+        <span className="text-xs font-medium block mb-1.5 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Tope mensual</span>
+        <MoneyInput value={amount} onChange={setAmount} currency={currency} />
+        <p className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)' }}>Cuando el gasto del mes supere este tope, te lo avisamos en la lista. Pon 0 para quitar el tope.</p>
+      </div>
+
+      {amount > 0 && (
+        <div className="rounded-2xl p-3" style={{ background: over ? 'var(--danger-glow)' : 'var(--surface)', border: `1px solid ${over ? 'rgba(248,113,113,0.25)' : 'var(--border)'}` }}>
+          <div className="flex justify-between text-xs mb-2">
+            <span style={{ color: 'var(--text-dim)' }}>Llevas {pct.toFixed(0)}%</span>
+            <span className="tabular" style={{ color: over ? 'var(--danger)' : 'var(--primary)', fontWeight: 600 }}>
+              {over ? `+${formatMoney(currentSpend - amount, currency)} encima` : `${formatMoney(remaining, currency)} restantes`}
+            </span>
+          </div>
+          <div className="progress-track">
+            <div className="progress-fill" style={{ width: `${pct}%`, background: over ? 'var(--danger)' : pct > 80 ? 'var(--warning)' : color || 'var(--primary)' }} />
+          </div>
+        </div>
+      )}
+
+      <button onClick={() => onSave(amount)} disabled={amount < 0} className="btn-primary w-full rounded-2xl py-3.5 text-base font-semibold">
+        {currentLimit > 0 ? 'Actualizar tope' : 'Guardar tope'}
+      </button>
+      {currentLimit > 0 && (
+        <button onClick={onClear} className="w-full rounded-2xl py-3 text-sm font-medium" style={{ background: 'var(--danger-glow)', color: 'var(--danger)', border: '1px solid rgba(248,113,113,0.2)' }}>Quitar tope</button>
+      )}
+    </div>
+  );
+}
+
+function MovementsScreen({ data, currency, hideAmounts, onSave, onDelete, onBulkAdd, onSetBudget }) {
   const [type, setType] = useState('income');
   const [editing, setEditing] = useState(null);
   const [creating, setCreating] = useState(false);
   const [servicesOpen, setServicesOpen] = useState(false);
+  const [budgetSheet, setBudgetSheet] = useState(null); // { categoryId, name }
+  const currentMonthKey = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }, []);
   const items = type === 'income' ? data.incomes : data.expenses;
   // Split: "constant" = things that hit every month (monthly/biweekly/weekly).
   //        "extras"   = things averaged across the year (biannual/annual/once-this-year).
@@ -4091,25 +4360,59 @@ function MovementsScreen({ data, currency, hideAmounts, onSave, onDelete, onBulk
 
       {byCategory.length > 0 && (
         <div className="animate-slideup" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <h3 className="display-font" style={{ fontSize: 17, fontWeight: 500, letterSpacing: '-0.02em', paddingLeft: 4 }}>Por categoría</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingLeft: 4 }}>
+            <h3 className="display-font" style={{ fontSize: 17, fontWeight: 500, letterSpacing: '-0.02em' }}>Por categoría</h3>
+            {type === 'expense' && <p style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Toca para presupuestar</p>}
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
             {byCategory.map(cat => {
               const pct = total > 0 ? (cat.total / total) * 100 : 0;
               const Icon = cat.icon;
+              const budget = type === 'expense' ? getBudgetStatus(data, cat.id, currentMonthKey) : null;
+              const cardProps = type === 'expense'
+                ? { onClick: () => setBudgetSheet({ categoryId: cat.id, name: cat.name, color: cat.color }), className: 'card card-press', style: { padding: 14, textAlign: 'left', cursor: 'pointer' } }
+                : { className: 'card', style: { padding: 14 } };
+              const Tag = type === 'expense' ? 'button' : 'div';
               return (
-                <div key={cat.id} className="card" style={{ padding: 14 }}>
+                <Tag key={cat.id} {...cardProps}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                     <div style={{ width: 28, height: 28, borderRadius: 8, background: `${cat.color}1A`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={13} color={cat.color} strokeWidth={2.4} /></div>
                     <span className="truncate" style={{ fontSize: 12, fontWeight: 500 }}>{cat.name}</span>
                   </div>
                   <p className="tabular" style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em' }}>{formatCompact(cat.total, currency, hideAmounts)}</p>
-                  <p className="tabular" style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 2, fontWeight: 500 }}>{pct.toFixed(0)}%</p>
-                </div>
+                  {budget ? (
+                    <>
+                      <div className="progress-track" style={{ height: 4, marginTop: 8 }}>
+                        <div className="progress-fill" style={{ width: `${Math.min(100, budget.pct)}%`, background: budget.over ? 'var(--danger)' : budget.pct > 80 ? 'var(--warning)' : 'var(--primary)' }} />
+                      </div>
+                      <p className="tabular" style={{ fontSize: 10, color: budget.over ? 'var(--danger)' : 'var(--text-muted)', marginTop: 4, fontWeight: 500 }}>
+                        {budget.over ? `+${formatCompact(budget.spent - budget.limit, currency, hideAmounts)} sobre tope` : `de ${formatCompact(budget.limit, currency, hideAmounts)} · ${budget.pct.toFixed(0)}%`}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="tabular" style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 2, fontWeight: 500 }}>{pct.toFixed(0)}%{type === 'expense' ? ' · sin tope' : ''}</p>
+                  )}
+                </Tag>
               );
             })}
           </div>
         </div>
       )}
+
+      {/* Budget editor sheet */}
+      <Sheet open={!!budgetSheet} onClose={() => setBudgetSheet(null)} title={budgetSheet ? `Tope para ${budgetSheet.name}` : ''} size="md">
+        {budgetSheet && (
+          <BudgetEditor
+            categoryName={budgetSheet.name}
+            color={budgetSheet.color}
+            currentLimit={((data.budgets || {})[budgetSheet.categoryId]) || 0}
+            currentSpend={getCategorySpend(data, budgetSheet.categoryId, currentMonthKey)}
+            currency={currency}
+            onSave={(amount) => { onSetBudget(budgetSheet.categoryId, amount); setBudgetSheet(null); }}
+            onClear={() => { onSetBudget(budgetSheet.categoryId, 0); setBudgetSheet(null); }}
+          />
+        )}
+      </Sheet>
 
       <div className="animate-slideup" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingLeft: 4 }}>
@@ -6107,11 +6410,145 @@ function CurrencySelector({ data, onUpdateUser, onUpdateAllAmounts }) {
   );
 }
 
-function SettingsScreen({ data, onUpdateUser, onUpdateSettings, onExport, onExportCalendar, onReset, onRequestNotifications, notifPermission, onUpdateAllAmounts, session, syncStatus, onLogout }) {
+// === MFA (2FA) panel for SettingsScreen ===
+// Enrolls or removes a TOTP factor via Supabase MFA.
+// Shows a QR code that the user scans with Google/Microsoft Authenticator,
+// then asks them to type the 6-digit code to confirm.
+function MfaPanel({ onClose }) {
+  const [factors, setFactors] = useState({ totp: [] });
+  const [loading, setLoading] = useState(true);
+  const [enrolling, setEnrolling] = useState(null); // { id, qr, secret, uri }
+  const [code, setCode] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(null);
+
+  const refresh = async () => {
+    setLoading(true);
+    const f = await mfaListFactors();
+    setFactors(f);
+    setLoading(false);
+  };
+  useEffect(() => { refresh(); }, []);
+
+  const startEnroll = async () => {
+    setErr('');
+    try {
+      const f = await mfaEnrollTotp();
+      setEnrolling({ id: f.id, qr: f.totp.qr_code, secret: f.totp.secret, uri: f.totp.uri });
+    } catch (e) { setErr(e.message || 'No se pudo iniciar 2FA'); }
+  };
+  const confirmEnroll = async () => {
+    if (!enrolling) return;
+    if (code.length !== 6) { setErr('El código tiene 6 dígitos'); return; }
+    setBusy(true); setErr('');
+    try {
+      await mfaVerifyEnrollment(enrolling.id, code);
+      setEnrolling(null); setCode('');
+      await refresh();
+    } catch (e) { setErr(e.message || 'Código incorrecto'); }
+    finally { setBusy(false); }
+  };
+  const cancelEnroll = async () => {
+    if (enrolling) { try { await mfaUnenroll(enrolling.id); } catch (e) {} }
+    setEnrolling(null); setCode(''); setErr('');
+  };
+  const remove = async (id) => {
+    setBusy(true);
+    try { await mfaUnenroll(id); await refresh(); }
+    catch (e) { setErr(e.message || 'No se pudo desactivar'); }
+    finally { setBusy(false); setConfirmRemove(null); }
+  };
+
+  const verifiedFactors = (factors.totp || []).filter(f => f.status === 'verified');
+
+  if (loading) return <p style={{ color: 'var(--text-dim)', fontSize: 13 }}>Cargando…</p>;
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl p-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+        <p style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+          La 2FA agrega un paso extra al login: además de tu contraseña, tendrás que poner un código de 6 dígitos generado por una app como <strong style={{ color: 'var(--text)' }}>Google Authenticator</strong>, <strong style={{ color: 'var(--text)' }}>Microsoft Authenticator</strong> o <strong style={{ color: 'var(--text)' }}>Authy</strong>. Si alguien adivina tu contraseña, no puede entrar sin tu teléfono.
+        </p>
+      </div>
+
+      {verifiedFactors.length > 0 ? (
+        <div className="space-y-3">
+          <p style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>2FA activa</p>
+          {verifiedFactors.map(f => (
+            <div key={f.id} className="rounded-2xl p-3 flex items-center justify-between" style={{ background: 'var(--primary-glow)', border: '1px solid rgba(52,211,153,0.25)' }}>
+              <div>
+                <p style={{ fontSize: 13, fontWeight: 600 }}>{f.friendly_name || 'App authenticator'}</p>
+                <p style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 2 }}>Activada · TOTP</p>
+              </div>
+              <button onClick={() => setConfirmRemove(f.id)} className="btn-ghost" style={{ padding: '6px 10px', borderRadius: 9, fontSize: 11.5, fontWeight: 600 }}>Quitar</button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        !enrolling && (
+          <button onClick={startEnroll} className="btn-primary w-full rounded-2xl py-3.5 text-base font-semibold">
+            Activar 2FA
+          </button>
+        )
+      )}
+
+      {enrolling && (
+        <div className="space-y-3 animate-fadein">
+          <p style={{ fontSize: 12, fontWeight: 600 }}>1. Escanea este código con tu app authenticator</p>
+          {enrolling.qr && (
+            <div style={{ background: '#fff', padding: 16, borderRadius: 16, display: 'flex', justifyContent: 'center' }}>
+              <img src={enrolling.qr} alt="QR code para 2FA" style={{ width: 200, height: 200, display: 'block' }} />
+            </div>
+          )}
+          <details style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            <summary style={{ cursor: 'pointer', userSelect: 'none' }}>¿No puedes escanear? Ingresa el código manual</summary>
+            <code style={{ display: 'block', marginTop: 8, padding: 8, background: 'var(--surface)', borderRadius: 6, fontSize: 11, wordBreak: 'break-all' }}>{enrolling.secret}</code>
+          </details>
+
+          <p style={{ fontSize: 12, fontWeight: 600, marginTop: 8 }}>2. Escribe el código de 6 dígitos que ves en la app</p>
+          <input
+            type="text" inputMode="numeric" maxLength={6}
+            value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
+            placeholder="000000"
+            className="input-base w-full tabular"
+            style={{ borderRadius: 14, padding: '14px 16px', fontSize: 22, letterSpacing: '0.3em', textAlign: 'center', fontWeight: 600 }}
+          />
+
+          {err && (
+            <div className="rounded-xl p-3 text-xs" style={{ background: 'var(--danger-glow)', border: '1px solid rgba(248,113,113,0.25)', color: 'var(--danger)' }}>{err}</div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={cancelEnroll} className="btn-ghost rounded-2xl py-3 text-sm font-semibold">Cancelar</button>
+            <button onClick={confirmEnroll} disabled={busy || code.length !== 6} className="btn-primary rounded-2xl py-3 text-sm font-semibold">{busy ? 'Verificando…' : 'Activar'}</button>
+          </div>
+        </div>
+      )}
+
+      {err && !enrolling && (
+        <div className="rounded-xl p-3 text-xs" style={{ background: 'var(--danger-glow)', border: '1px solid rgba(248,113,113,0.25)', color: 'var(--danger)' }}>{err}</div>
+      )}
+
+      <ConfirmDialog open={!!confirmRemove} title="¿Quitar 2FA?" message="Tu cuenta volverá a requerir solo contraseña para entrar. Puedes reactivar 2FA en cualquier momento." onCancel={() => setConfirmRemove(null)} onConfirm={() => remove(confirmRemove)} danger />
+    </div>
+  );
+}
+
+function SettingsScreen({ data, onUpdateUser, onUpdateSettings, onExport, onExportCSV, onImport, onExportCalendar, onReset, onRequestNotifications, notifPermission, onUpdateAllAmounts, session, syncStatus, onLogout, currency }) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [tempName, setTempName] = useState(data.user.name);
   const [confirmLogout, setConfirmLogout] = useState(false);
+  const [mfaSheetOpen, setMfaSheetOpen] = useState(false);
+  const importInputRef = useRef(null);
+  // Days since last backup (null if never)
+  const daysSinceBackup = useMemo(() => {
+    const last = data.settings && data.settings.lastBackupAt;
+    if (!last) return null;
+    const ms = Date.now() - new Date(last).getTime();
+    return Math.floor(ms / 86400000);
+  }, [data.settings && data.settings.lastBackupAt]);
   return (
     <div className="px-5 pb-32 space-y-5 stagger">
       {session && (
@@ -6241,10 +6678,42 @@ function SettingsScreen({ data, onUpdateUser, onUpdateSettings, onExport, onExpo
         </div>
       </SettingsGroup>
 
+      {session && (
+        <SettingsGroup title="Seguridad de cuenta">
+          <SettingsRow icon={Sparkles} label="Autenticación en 2 pasos (2FA)" onPress={() => setMfaSheetOpen(true)} />
+        </SettingsGroup>
+      )}
+
       <SettingsGroup title="Datos">
-        <SettingsRow icon={Download} label="Exportar mis datos" onPress={onExport} />
+        {/* Backup info banner */}
+        <div className="rounded-2xl p-3" style={{ background: daysSinceBackup === null || daysSinceBackup > 30 ? 'rgba(251,191,36,0.10)' : 'var(--surface)', border: `1px solid ${daysSinceBackup === null || daysSinceBackup > 30 ? 'rgba(251,191,36,0.25)' : 'var(--border)'}`, marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Info size={14} color={daysSinceBackup === null || daysSinceBackup > 30 ? 'var(--warning)' : 'var(--text-muted)'} style={{ flexShrink: 0 }} />
+            <p style={{ fontSize: 11.5, color: 'var(--text-dim)', lineHeight: 1.45 }}>
+              {daysSinceBackup === null
+                ? <>Nunca has descargado un backup. Hazlo para tener una copia fuera de la nube.</>
+                : daysSinceBackup === 0
+                  ? 'Backup descargado hoy ✓'
+                  : daysSinceBackup === 1
+                    ? 'Último backup hace 1 día'
+                    : daysSinceBackup > 30
+                      ? <><strong style={{ color: 'var(--warning)' }}>Hace {daysSinceBackup} días</strong> sin backup. Te recomendamos descargar uno.</>
+                      : `Último backup hace ${daysSinceBackup} días`}
+            </p>
+          </div>
+        </div>
+        <SettingsRow icon={Download} label="Descargar backup (.json)" onPress={onExport} />
+        <SettingsRow icon={Download} label="Exportar a CSV / Excel" onPress={onExportCSV} />
+        <SettingsRow icon={Calendar} label="Exportar a calendario (.ics)" onPress={onExportCalendar} />
+        <SettingsRow icon={RotateCcw} label="Importar backup (.json)" onPress={() => importInputRef.current && importInputRef.current.click()} />
+        <input ref={importInputRef} type="file" accept=".json,application/json" style={{ display: 'none' }}
+          onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) { onImport(f); e.target.value = ''; } }} />
         <SettingsRow icon={RotateCcw} label="Restablecer todo" onPress={() => setConfirmReset(true)} danger />
       </SettingsGroup>
+
+      <Sheet open={mfaSheetOpen} onClose={() => setMfaSheetOpen(false)} title="Autenticación en 2 pasos" size="lg">
+        <MfaPanel onClose={() => setMfaSheetOpen(false)} />
+      </Sheet>
 
       <div style={{ textAlign: 'center', paddingTop: 16 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
@@ -6394,13 +6863,34 @@ function QuickTransactionForm({ type, currency, onSave }) {
 // ============================================================================
 // === AUTH SCREEN (only used when Supabase is configured) ===
 function AuthScreen({ onLoggedIn }) {
-  const [mode, setMode] = useState('login'); // 'login' | 'signup' | 'forgot'
+  const [mode, setMode] = useState('login'); // 'login' | 'signup' | 'forgot' | 'mfa'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [password2, setPassword2] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [info, setInfo] = useState('');
+  // MFA challenge state during login
+  const [mfaFactorId, setMfaFactorId] = useState(null);
+  const [mfaCode, setMfaCode] = useState('');
+
+  // After password login, check if MFA is required. If yes, switch to 'mfa' mode.
+  const checkMfaAfterLogin = async () => {
+    try {
+      const aalResp = await supabaseClient.auth.mfa.getAuthenticatorAssuranceLevel();
+      const aal = aalResp && aalResp.data;
+      if (aal && aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2') {
+        const factors = await mfaListFactors();
+        const verified = (factors.totp || []).find(f => f.status === 'verified');
+        if (verified) {
+          setMfaFactorId(verified.id);
+          setMode('mfa');
+          return false; // need MFA
+        }
+      }
+    } catch (e) { /* if MFA check fails, fall through and let user in */ }
+    return true; // no MFA needed
+  };
 
   // Basic RFC-5322-lite email format check (good enough for client-side; server validates too)
   const emailValid = (em) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em);
@@ -6412,6 +6902,18 @@ function AuthScreen({ onLoggedIn }) {
     setErr(''); setInfo('');
     if (!email.trim()) { setErr('Escribe tu correo'); return; }
     if (!emailValid(email.trim())) { setErr('Ese correo no parece válido'); return; }
+    // For MFA mode, password isn't being verified — only the 6-digit code
+    if (mode === 'mfa') {
+      if (mfaCode.length !== 6) { setErr('El código tiene 6 dígitos'); return; }
+      setBusy(true);
+      try {
+        await mfaChallengeAndVerify(mfaFactorId, mfaCode);
+        if (onLoggedIn) onLoggedIn();
+      } catch (e) {
+        setErr(e.message || 'Código incorrecto');
+      } finally { setBusy(false); }
+      return;
+    }
     if (mode !== 'forgot' && !passwordStrong(password)) {
       setErr('La contraseña debe tener mínimo 8 caracteres, con letras y números');
       return;
@@ -6422,7 +6924,8 @@ function AuthScreen({ onLoggedIn }) {
       if (mode === 'login') {
         const { error } = await supabaseClient.auth.signInWithPassword({ email: email.trim(), password });
         if (error) throw error;
-        if (onLoggedIn) onLoggedIn();
+        const ok = await checkMfaAfterLogin();
+        if (ok && onLoggedIn) onLoggedIn();
       } else if (mode === 'signup') {
         const { data, error } = await supabaseClient.auth.signUp({ email: email.trim(), password });
         if (error) throw error;
@@ -6453,13 +6956,28 @@ function AuthScreen({ onLoggedIn }) {
           <span style={{ fontSize: 11, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.2em', fontWeight: 600 }}>Finanzas</span>
         </div>
         <h1 className="display-font" style={{ fontSize: 36, lineHeight: 1.05, fontWeight: 500, marginBottom: 6, letterSpacing: '-0.035em' }}>
-          {mode === 'login' ? 'Inicia sesión' : mode === 'signup' ? 'Crea tu cuenta' : 'Recuperar contraseña'}
+          {mode === 'login' ? 'Inicia sesión' : mode === 'signup' ? 'Crea tu cuenta' : mode === 'mfa' ? 'Verificación 2FA' : 'Recuperar contraseña'}
         </h1>
         <p className="tagline-script" style={{ fontSize: 22, marginBottom: 24 }}>
-          tus datos, en todos tus dispositivos
+          {mode === 'mfa' ? 'un paso más para entrar' : 'tus datos, en todos tus dispositivos'}
         </p>
 
         <form onSubmit={submit} className="space-y-3">
+          {mode === 'mfa' ? (
+            <div>
+              <p style={{ fontSize: 12.5, color: 'var(--text-dim)', marginBottom: 10, lineHeight: 1.5 }}>
+                Abre tu app authenticator (Google/Microsoft Authenticator, Authy) y escribe el código de 6 dígitos para <strong style={{ color: 'var(--text)' }}>{email}</strong>.
+              </p>
+              <input
+                type="text" inputMode="numeric" maxLength={6} autoFocus
+                value={mfaCode} onChange={e => setMfaCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="000000"
+                className="input-base w-full tabular"
+                style={{ borderRadius: 14, padding: '14px 16px', fontSize: 22, letterSpacing: '0.3em', textAlign: 'center', fontWeight: 600 }}
+              />
+            </div>
+          ) : (
+          <>
           <div>
             <span style={{ display: 'block', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>Correo</span>
             <input type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)}
@@ -6487,6 +7005,8 @@ function AuthScreen({ onLoggedIn }) {
                 style={{ borderRadius: 14, padding: '14px 16px', fontSize: 15.5 }} />
             </div>
           )}
+          </>
+          )}
 
           {err && (
             <div className="rounded-xl p-3 text-xs" style={{ background: 'var(--danger-glow)', border: '1px solid rgba(248,113,113,0.25)', color: 'var(--danger)' }}>{err}</div>
@@ -6496,7 +7016,7 @@ function AuthScreen({ onLoggedIn }) {
           )}
 
           <button type="submit" disabled={busy} className="btn-primary w-full" style={{ borderRadius: 14, padding: '14px 0', fontSize: 15.5, fontWeight: 600, marginTop: 6 }}>
-            {busy ? 'Procesando…' : mode === 'login' ? 'Entrar' : mode === 'signup' ? 'Crear cuenta' : 'Enviar correo'}
+            {busy ? 'Procesando…' : mode === 'login' ? 'Entrar' : mode === 'signup' ? 'Crear cuenta' : mode === 'mfa' ? 'Verificar' : 'Enviar correo'}
           </button>
         </form>
 
@@ -6506,6 +7026,8 @@ function AuthScreen({ onLoggedIn }) {
               <button onClick={() => { setMode('signup'); setErr(''); setInfo(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}>Crear cuenta</button>
               <button onClick={() => { setMode('forgot'); setErr(''); setInfo(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>Olvidé mi contraseña</button>
             </>
+          ) : mode === 'mfa' ? (
+            <button onClick={async () => { try { await supabaseClient.auth.signOut(); } catch (e) {} setMode('login'); setMfaCode(''); setMfaFactorId(null); setErr(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}>← Cancelar y volver a inicio</button>
           ) : (
             <button onClick={() => { setMode('login'); setErr(''); setInfo(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}>← Volver a iniciar sesión</button>
           )}
@@ -6531,8 +7053,13 @@ function FinanzasApp() {
   // Auth & cloud sync state (only meaningful if SUPABASE_CONFIGURED)
   const [session, setSession] = useState(null);
   const [authChecking, setAuthChecking] = useState(SUPABASE_CONFIGURED);
-  const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'syncing' | 'synced' | 'error'
+  const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'syncing' | 'synced' | 'error' | 'conflict'
   const cloudSaveTimerRef = useRef(null);
+  // Track the cloud's updated_at we've seen, so we can detect concurrent edits
+  // from another device. Updated on every successful cloud load/save.
+  const cloudVersionRef = useRef(null);
+  const [conflictData, setConflictData] = useState(null); // { data, updatedAt }
+  const [mfaRequired, setMfaRequired] = useState(false);
 
   const [data, setData] = useState({
     user: { name: '', currency: 'COP', themeOverride: null },
@@ -6627,17 +7154,20 @@ function FinanzasApp() {
         setSyncStatus('syncing');
         const cloud = await cloudLoadData();
         if (cancelled) return;
-        if (cloud && Object.keys(cloud).length > 0) {
-          applyPayload(cloud);
-          try { safeStorage.set(STORAGE_KEY, JSON.stringify(cloud)); } catch (e) {}
+        if (cloud && cloud.data && Object.keys(cloud.data).length > 0) {
+          applyPayload(cloud.data);
+          cloudVersionRef.current = cloud.updatedAt;
+          try { safeStorage.set(STORAGE_KEY, JSON.stringify(cloud.data)); } catch (e) {}
           setSyncStatus('synced');
         } else if (local) {
           // First-time login on this user: push local → cloud
           applyPayload(local);
           const r = await cloudSaveData(local);
+          if (r.ok) cloudVersionRef.current = r.updatedAt;
           setSyncStatus(r.ok ? 'synced' : 'error');
         } else {
           applyPayload(null);
+          cloudVersionRef.current = null;
           setSyncStatus('synced');
         }
       } else {
@@ -6650,17 +7180,49 @@ function FinanzasApp() {
   }, [session, authChecking]);
 
   // saveData: always write localStorage; if cloud + logged in, debounce a cloud upsert
+  // with optimistic concurrency. If another device wrote after our last load,
+  // we don't overwrite — we surface a conflict dialog so the user can choose.
   const saveData = useCallback((newData) => {
     try { safeStorage.set(STORAGE_KEY, JSON.stringify(newData)); } catch (e) {}
     if (supabaseClient && session) {
       setSyncStatus('syncing');
       if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current);
       cloudSaveTimerRef.current = setTimeout(async () => {
-        const r = await cloudSaveData(newData);
-        setSyncStatus(r.ok ? 'synced' : 'error');
+        const r = await cloudSaveData(newData, cloudVersionRef.current);
+        if (r.ok) {
+          cloudVersionRef.current = r.updatedAt;
+          setSyncStatus('synced');
+        } else if (r.conflict) {
+          setConflictData(r.latest);
+          setSyncStatus('conflict');
+        } else {
+          setSyncStatus('error');
+        }
       }, 1200);
     }
   }, [session]);
+
+  // User chose to keep their local changes — force-push, overwriting cloud
+  const handleResolveKeepLocal = async () => {
+    setSyncStatus('syncing');
+    setConflictData(null);
+    // Bypass conflict check by setting version to whatever is now in cloud
+    if (conflictData) cloudVersionRef.current = conflictData.updatedAt;
+    const r = await cloudSaveData(data, cloudVersionRef.current);
+    if (r.ok) { cloudVersionRef.current = r.updatedAt; setSyncStatus('synced'); setToast('Tus cambios sobrescribieron la nube'); }
+    else setSyncStatus('error');
+  };
+
+  // User chose to keep the other device's version — replace local with cloud
+  const handleResolveKeepCloud = () => {
+    if (!conflictData) return;
+    applyPayload(conflictData.data);
+    try { safeStorage.set(STORAGE_KEY, JSON.stringify(conflictData.data)); } catch (e) {}
+    cloudVersionRef.current = conflictData.updatedAt;
+    setConflictData(null);
+    setSyncStatus('synced');
+    setToast('Restauramos la versión de tu otro dispositivo');
+  };
 
   const handleLogout = async () => {
     if (!supabaseClient) return;
@@ -6903,8 +7465,50 @@ function FinanzasApp() {
       const a = document.createElement('a');
       a.href = url; a.download = `finanzas-export-${new Date().toISOString().slice(0,10)}.json`;
       a.click(); URL.revokeObjectURL(url);
-      setToast('Exportado correctamente');
+      // Record backup time so we can stop nagging
+      updateData(prev => ({ ...prev, settings: { ...prev.settings, lastBackupAt: new Date().toISOString() } }));
+      setToast('Backup descargado');
     } catch (e) { setToast('Error al exportar'); }
+  };
+
+  const handleExportCSV = () => {
+    try {
+      const csv = generateCSV(data);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `finanzas-${new Date().toISOString().slice(0,10)}.csv`;
+      a.click(); URL.revokeObjectURL(url);
+      setToast('CSV descargado · ábrelo con Excel / Google Sheets');
+    } catch (e) { setToast('Error al generar CSV'); }
+  };
+
+  // Import a previously-exported JSON backup, replacing current data after confirmation.
+  const handleImport = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        if (!parsed || typeof parsed !== 'object') throw new Error('Archivo inválido');
+        updateData(prev => ({
+          ...prev,
+          ...parsed,
+          // Keep current Supabase-related session intact
+          user: { ...prev.user, ...(parsed.user || {}) },
+        }));
+        setToast('Datos importados');
+      } catch (e) { setToast('Archivo inválido o corrupto'); }
+    };
+    reader.readAsText(file);
+  };
+
+  // Update per-category budget (called from MovementsScreen / Settings)
+  const handleSetBudget = (categoryId, amount) => {
+    updateData(prev => ({
+      ...prev,
+      budgets: { ...(prev.budgets || {}), [categoryId]: amount > 0 ? amount : 0 },
+    }));
   };
   const handleReset = () => {
     const fresh = {
@@ -6982,9 +7586,9 @@ function FinanzasApp() {
         />
         {tab === 'home' && <Dashboard data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onNavigate={setTab} onPayDebt={(d) => setPayDebtSheet(d)} onAddTransaction={(t) => setQuickAdd(t)} onConfirm={handleConfirm} onConfirmDebt={handleConfirmDebtPayment} />}
         {tab === 'debts' && <DebtsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveDebt} onDelete={handleDeleteDebt} onArchive={handleArchiveDebt} onPay={handlePayDebt} />}
-        {tab === 'movements' && <MovementsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveMovement} onDelete={handleDeleteMovement} onBulkAdd={handleBulkAddExpenses} />}
+        {tab === 'movements' && <MovementsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveMovement} onDelete={handleDeleteMovement} onBulkAdd={handleBulkAddExpenses} onSetBudget={handleSetBudget} />}
         {tab === 'projection' && <PlanesScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onUpdateSavings={handleUpdateSavings} onSavePlan={handleSavePlan} onDeletePlan={handleDeletePlan} />}
-        {tab === 'settings' && <SettingsScreen data={data} onUpdateUser={(u) => updateData(prev => ({ ...prev, user: { ...prev.user, ...u } }))} onUpdateSettings={(s) => updateData(prev => ({ ...prev, settings: { ...prev.settings, ...s } }))} onExport={handleExport} onExportCalendar={handleExportCalendar} onReset={handleReset} onRequestNotifications={handleRequestNotifs} notifPermission={notifPermission} session={session} syncStatus={syncStatus} onLogout={handleLogout} />}
+        {tab === 'settings' && <SettingsScreen data={data} onUpdateUser={(u) => updateData(prev => ({ ...prev, user: { ...prev.user, ...u } }))} onUpdateSettings={(s) => updateData(prev => ({ ...prev, settings: { ...prev.settings, ...s } }))} onExport={handleExport} onExportCSV={handleExportCSV} onImport={handleImport} onExportCalendar={handleExportCalendar} onReset={handleReset} onRequestNotifications={handleRequestNotifs} notifPermission={notifPermission} session={session} syncStatus={syncStatus} onLogout={handleLogout} currency={data.user.currency} />}
         <BottomNav active={tab} onChange={setTab} />
         <Sheet open={notifSheetOpen} onClose={() => setNotifSheetOpen(false)} title="Próximos pagos" size="md">
           <NotificationsList data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onPay={(d) => setPayDebtSheet(d)} onClose={() => setNotifSheetOpen(false)} />
@@ -6996,6 +7600,31 @@ function FinanzasApp() {
           {quickAdd && <QuickTransactionForm type={quickAdd} currency={data.user.currency} onSave={(p) => { handleQuickTransaction(quickAdd, p); setQuickAdd(null); }} />}
         </Sheet>
         <Toast message={toast} onClose={() => setToast('')} />
+        {/* Conflict resolution dialog: appears when cloud was changed by another device */}
+        <Sheet open={!!conflictData} onClose={() => { /* no-op: must choose */ }} title="Cambios en otro dispositivo" size="md">
+          <div className="space-y-4">
+            <div className="rounded-2xl p-4" style={{ background: 'var(--warning-glow)', border: '1px solid rgba(251,191,36,0.3)' }}>
+              <div className="flex items-start gap-2">
+                <AlertCircle size={18} color="var(--warning)" style={{ flexShrink: 0, marginTop: 2 }} />
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Tu otro dispositivo guardó algo después de tu última carga.</p>
+                  <p style={{ fontSize: 11.5, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                    Para evitar pisar esos cambios sin querer, elige qué versión conservar. Si quieres ver primero qué hay en la nube, descarga la última versión.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <button onClick={handleResolveKeepCloud} className="btn-primary w-full rounded-2xl py-3.5 text-sm font-semibold">
+              Usar la versión de mi otro dispositivo (descartar lo que hice aquí)
+            </button>
+            <button onClick={handleResolveKeepLocal} className="w-full rounded-2xl py-3.5 text-sm font-semibold" style={{ background: 'var(--danger-glow)', color: 'var(--danger)', border: '1px solid rgba(248,113,113,0.25)' }}>
+              Pisar la nube con lo que hice aquí
+            </button>
+            <p style={{ fontSize: 10.5, color: 'var(--text-muted)', textAlign: 'center' }}>
+              Esta ventana no se cierra hasta que elijas. No queremos perder tus datos.
+            </p>
+          </div>
+        </Sheet>
       </div>
     </div>
   );
@@ -7003,6 +7632,32 @@ function FinanzasApp() {
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<FinanzasApp />);
+</script>
+
+<!-- Service worker registration: enables offline use and PWA install.
+     The SW is at /sw.js (root scope). Wrapped in a try/catch so any failure
+     during registration never blocks app rendering. -->
+<script>
+  if ('serviceWorker' in navigator && location.protocol === 'https:' || location.hostname === 'localhost') {
+    window.addEventListener('load', function() {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .then(function(reg) {
+          // If a new SW is waiting, tell it to take over immediately.
+          if (reg.waiting) reg.waiting.postMessage('SKIP_WAITING');
+          reg.addEventListener('updatefound', function() {
+            var nw = reg.installing;
+            if (!nw) return;
+            nw.addEventListener('statechange', function() {
+              if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+                // New version installed — refresh on next navigation to pick it up.
+                nw.postMessage('SKIP_WAITING');
+              }
+            });
+          });
+        })
+        .catch(function(err) { console.warn('SW registration failed:', err); });
+    });
+  }
 </script>
 </body>
 </html>
