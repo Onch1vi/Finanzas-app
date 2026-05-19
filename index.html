@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Finanzas</title>
 
+<!-- Content Security Policy: blocks scripts from unknown CDNs, blocks framing
+     (clickjacking), restricts API connections to Supabase, prevents object embeds
+     and form-action hijacking. 'unsafe-inline'/'unsafe-eval' on script-src are
+     required by Babel Standalone (which compiles JSX at runtime via eval). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' https://*.supabase.co wss://*.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests">
+<meta http-equiv="X-Content-Type-Options" content="nosniff">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+
 <!-- iOS PWA meta -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -516,12 +524,15 @@
 })();
 </script>
 
-<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
-<script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- All third-party scripts are loaded with Subresource Integrity (SRI) so a
+     compromised CDN cannot inject malicious code: if the byte hash doesn't match,
+     the browser refuses to execute the script. Versions are pinned. -->
+<script crossorigin="anonymous" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin="anonymous" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script crossorigin="anonymous" integrity="sha384-/AfDwVDXNopzPvhxMPQ11y1OCpR6mVkWx47qzSwIiquvxkcMkZddEzDNtIOtfCpk" src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+<script crossorigin="anonymous" integrity="sha384-ssfGb8RU7vYZE3CtgneicDd/+nYL00h9HutpYkRW//HMsswy+Hdyr1/osa6ByuX9" src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
+<script crossorigin="anonymous" integrity="sha384-Gw0bTvgD2yY+K0goCsanQRELPoBFRNu1wqppfYowTOE2rAfeHZheJQJ7rXb+bSbr" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.47.0/dist/umd/supabase.js"></script>
+<script crossorigin="anonymous" integrity="sha384-qVgGRi0TCdh+xrBD9+4kG0YlkbOkWu2J3CB46EekpYQmtM96n9v+uaKIS5ipaqKb" src="https://unpkg.com/@babel/standalone@7.29.4/babel.min.js"></script>
 
 <!-- Supabase config: paste your project URL and anon key.
      If left as PASTE_HERE_..., the app keeps working offline with localStorage only. -->
@@ -724,6 +735,24 @@ const daysBetween = (a, b) => {
   return Math.round(ms / 86400000);
 };
 
+// Parse a YYYY-MM-DD string as a LOCAL date (not UTC).
+// JS's `new Date('2024-05-19')` interprets the string as UTC midnight,
+// which in UTC-5 (Colombia/Peru/etc) becomes May 18 7pm LOCAL — causing
+// off-by-one bugs in .getDate() / .getMonth() comparisons.
+// Use this helper anywhere you parse a date that came from <input type="date">.
+// Returns null only for empty/null input. For malformed strings returns the
+// JS-native Invalid Date so existing `isNaN(date)` checks continue to work.
+const parseLocalDate = (isoStr) => {
+  if (isoStr === null || isoStr === undefined || isoStr === '') return null;
+  const s = String(isoStr);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) {
+    // Fallback for full ISO timestamps (e.g. createdAt) — JS handles those correctly.
+    return new Date(s);
+  }
+  return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+};
+
 const getNextPaymentDate = (paymentDay, fromDate = new Date(), adjustForBusinessDay = false) => {
   const from = new Date(fromDate);
   from.setHours(0,0,0,0);
@@ -811,7 +840,7 @@ function getIncomeForMonth(item, year, monthIdx) {
   if (!item.active) return 0;
   if (item.frequency === 'once') {
     if (!item.onceDate) return 0;
-    const d = new Date(item.onceDate);
+    const d = parseLocalDate(item.onceDate);
     return (d.getFullYear() === year && d.getMonth() === monthIdx) ? item.amount : 0;
   }
   if (item.frequency === 'biannual') {
@@ -846,7 +875,7 @@ function simulateDebtPayoff(debt, startDate = new Date()) {
   let firstYear = startDate.getFullYear();
   let firstMonth = startDate.getMonth();
   if (debt.startDate) {
-    const ds = new Date(debt.startDate);
+    const ds = parseLocalDate(debt.startDate);
     if (!isNaN(ds)) {
       const dsKey = ds.getFullYear() * 12 + ds.getMonth();
       const stKey = firstYear * 12 + firstMonth;
@@ -875,14 +904,14 @@ function simulateDebtPayoff(debt, startDate = new Date()) {
 // Returns the effective "next payment date" for a debt, respecting its startDate.
 // If startDate is in the future, returns the first occurrence on/after startDate.
 function getDebtNextPaymentDate(debt, fromDate = new Date()) {
-  const base = (debt.startDate && new Date(debt.startDate) > fromDate) ? new Date(debt.startDate) : fromDate;
+  const base = (debt.startDate && parseLocalDate(debt.startDate) > fromDate) ? parseLocalDate(debt.startDate) : fromDate;
   return getNextPaymentDate(debt.paymentDay || 1, base);
 }
 
 // True if the debt has not started being paid yet (future-start debt)
 function isDebtFutureStart(debt, today = new Date()) {
   if (!debt.startDate) return false;
-  const ds = new Date(debt.startDate);
+  const ds = parseLocalDate(debt.startDate);
   if (isNaN(ds)) return false;
   // Future-start if start month > current month
   const dsKey = ds.getFullYear() * 12 + ds.getMonth();
@@ -948,7 +977,7 @@ function buildMonthlyProjection(data, monthsAhead = 24, startDate = new Date()) 
     let planOneTimeImpact = 0;
     (data.plans || []).forEach(plan => {
       if (!plan.active && plan.active !== undefined) return;
-      const planStart = plan.startDate ? new Date(plan.startDate) : null;
+      const planStart = plan.startDate ? parseLocalDate(plan.startDate) : null;
       if (!planStart) return;
       const planStartYear = planStart.getFullYear();
       const planStartMonth = planStart.getMonth();
@@ -1046,7 +1075,7 @@ function buildSmartAllocation(projection, savingsConfig, plansConfig) {
   const minLifeBudget = savingsConfig.minLifeBudget || 0;
   const goal = savingsConfig.goal || 0;
   const currentSavings = savingsConfig.current || 0;
-  const goalDate = savingsConfig.goalDate ? new Date(savingsConfig.goalDate) : null;
+  const goalDate = savingsConfig.goalDate ? parseLocalDate(savingsConfig.goalDate) : null;
   const emergencyTarget = savingsConfig.emergencyTarget || 0;
   const highInterestDebts = (plansConfig && plansConfig.highInterestDebts) || [];
 
@@ -1164,7 +1193,7 @@ function buildPlanAllocations(plans, allocatedProjection, currentSavings, mainGo
     if (p.type === 'purchase' && p.financing === 'own' && p.cost > 0) return true;
     return false;
   }).map(p => {
-    const targetDate = p.startDate ? new Date(p.startDate) : null;
+    const targetDate = p.startDate ? parseLocalDate(p.startDate) : null;
     const totalNeeded = (p.cost || 0) + (p.penaltyCost || 0);
     return {
       id: p.id, name: p.name, type: p.type, subcategory: p.subcategory,
@@ -1285,7 +1314,7 @@ function getMonthlyEquivalent(item) {
   if (item.frequency === 'once') {
     // One-time only counts in its specific month
     if (!item.onceDate) return 0;
-    const d = new Date(item.onceDate);
+    const d = parseLocalDate(item.onceDate);
     const now = new Date();
     return (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) ? a : 0;
   }
@@ -1302,7 +1331,7 @@ function getNextOccurrenceDate(item, fromDate = new Date()) {
   const adjust = item.adjustForBusinessDay !== false;
   if (item.frequency === 'once') {
     if (!item.onceDate) return null;
-    const d = new Date(item.onceDate);
+    const d = parseLocalDate(item.onceDate);
     return d >= from ? d : null;
   }
   if (item.frequency === 'biannual') {
@@ -1365,7 +1394,7 @@ function simulateMonthDaily(data, today = new Date()) {
     const freq = i.frequency || 'monthly';
     if (freq === 'once') {
       if (!i.onceDate) return;
-      const d = new Date(i.onceDate);
+      const d = parseLocalDate(i.onceDate);
       if (d >= monthStart && d <= monthEnd) {
         const key = `inc-${i.id}-${monthKey}`;
         events.push({ date: d, amount: i.amount || 0, name: i.name, kind: 'income', key, confirmed: !!confirms[key] });
@@ -1416,7 +1445,7 @@ function simulateMonthDaily(data, today = new Date()) {
     const freq = e.frequency || 'monthly';
     if (freq === 'once') {
       if (!e.onceDate) return;
-      const d = new Date(e.onceDate);
+      const d = parseLocalDate(e.onceDate);
       if (d >= monthStart && d <= monthEnd) {
         const key = `exp-${e.id}-${monthKey}`;
         events.push({ date: d, amount: -(e.amount || 0), name: e.name, kind: 'expense', key, confirmed: !!confirms[key] });
@@ -1464,7 +1493,7 @@ function simulateMonthDaily(data, today = new Date()) {
   // Debts: one event per active non-archived non-future-start debt
   (data.debts || []).filter(d => !d.archived && (d.totalAmount - (d.paidAmount || 0)) > 0).forEach(d => {
     if (isDebtFutureStart(d, t)) {
-      const ds = new Date(d.startDate);
+      const ds = parseLocalDate(d.startDate);
       // If the future start falls inside this month, include it
       if (ds >= monthStart && ds <= monthEnd) {
         const key = `debt-${d.id}-${monthKey}`;
@@ -1825,7 +1854,7 @@ function buildFinancialAdvice(data, currency) {
   const emergencyMonths = (data.savings && data.savings.emergencyMonths) || 3;
   const emergencyTarget = monthlyExpense * emergencyMonths;
   const goal = (data.savings && data.savings.goal) || 0;
-  const goalDate = data.savings && data.savings.goalDate ? new Date(data.savings.goalDate) : null;
+  const goalDate = data.savings && data.savings.goalDate ? parseLocalDate(data.savings.goalDate) : null;
   const lifeBudgetPct = (data.savings && data.savings.lifeBudgetPct) || 0.15;
   const minLifeBudget = (data.savings && data.savings.minLifeBudget) || 0;
 
@@ -2574,7 +2603,7 @@ function KeyDatesCard({ goalReachDate, debtFreeDate, dailySim, savings, currency
       detail: savings.goal > 0 ? formatMoney(savings.goal, currency, hideAmounts) : '',
       dateLabel: goalReachDate instanceof Date ? formatDate(goalReachDate) : '—',
       hint: savings.goalDate
-        ? (new Date(savings.goalDate) >= goalReachDate ? 'A tiempo con tu objetivo' : `Tu fecha objetivo era ${formatDateShort(new Date(savings.goalDate))}`)
+        ? (parseLocalDate(savings.goalDate) >= goalReachDate ? 'A tiempo con tu objetivo' : `Tu fecha objetivo era ${formatDateShort(parseLocalDate(savings.goalDate))}`)
         : 'Sin fecha objetivo'
     });
   }
@@ -2819,7 +2848,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
       const freq = item.frequency || 'monthly';
       if (freq === 'once') {
         if (!item.onceDate) return 0;
-        const d = new Date(item.onceDate);
+        const d = parseLocalDate(item.onceDate);
         return (d >= monthStart && d <= monthEnd) ? (item.amount || 0) : 0;
       }
       if (freq === 'monthly') return item.amount || 0;
@@ -2864,7 +2893,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
     debts.filter(d => !d.archived && (d.totalAmount - (d.paidAmount || 0)) > 0).forEach(d => {
       // Skip if debt hasn't started yet (future-start)
       if (d.startDate) {
-        const ds = new Date(d.startDate);
+        const ds = parseLocalDate(d.startDate);
         if (!isNaN(ds) && ds > monthEnd) return;
       }
       const date = getDebtNextPaymentDate(d, monthStart);
@@ -2919,7 +2948,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
     // Income change: an income that starts before this month
     const incomeStarts = (data.incomes || []).filter(i => i.active && i.frequency === 'once' && i.onceDate)
       .filter(i => {
-        const d = new Date(i.onceDate);
+        const d = parseLocalDate(i.onceDate);
         return d.getFullYear() < futurePositive.year || (d.getFullYear() === futurePositive.year && d.getMonth() <= futurePositive.monthIdx);
       });
     if (incomeStarts.length > 0) {
@@ -2994,7 +3023,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
         return null;
       }
       if (freq === 'once' && item.onceDate) {
-        const d = new Date(item.onceDate);
+        const d = parseLocalDate(item.onceDate);
         return d;
       }
       return null;
@@ -3004,7 +3033,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
     debts.filter(d => !d.archived && (d.totalAmount - (d.paidAmount || 0)) > 0).forEach(d => {
       // Future-start debts: only show if their start date is within the horizon
       if (isDebtFutureStart(d, today)) {
-        const startD = new Date(d.startDate);
+        const startD = parseLocalDate(d.startDate);
         if (startD > horizon) return; // too far in the future
         const monthKey = getMonthKey(startD);
         const confirmKey = `debt-${d.id}-${monthKey}`;
@@ -3685,7 +3714,7 @@ function DebtCard({ debt, currency, hideAmounts, onTap }) {
   const progress = Math.min(100, ((debt.paidAmount || 0) / debt.totalAmount) * 100);
   const today = new Date();
   const futureStart = isDebtFutureStart(debt, today);
-  const effectiveNext = futureStart ? new Date(debt.startDate) : debt.nextDate;
+  const effectiveNext = futureStart ? parseLocalDate(debt.startDate) : debt.nextDate;
   const days = daysBetween(today, effectiveNext);
   const urgent = !futureStart && days <= 3 && remaining > 0;
   const completed = remaining <= 0;
@@ -3728,7 +3757,7 @@ function DebtForm({ initial, currency, onSave }) {
   const [form, setForm] = useState(initial ? { ...defaults, ...initial, startDate: initial.startDate || todayStr } : defaults);
   const update = (k, v) => setForm(s => ({ ...s, [k]: v }));
   const valid = form.name.trim() && form.totalAmount > 0 && form.paymentDay >= 1 && form.paymentDay <= 31;
-  const startDateObj = form.startDate ? new Date(form.startDate) : null;
+  const startDateObj = form.startDate ? parseLocalDate(form.startDate) : null;
   const today0 = new Date(); today0.setHours(0,0,0,0);
   const isFuture = startDateObj && startDateObj > today0;
   // Estimate months to payoff for preview
@@ -3971,7 +4000,7 @@ function MovementsScreen({ data, currency, hideAmounts, onSave, onDelete, onBulk
         if (d >= monthStart && d <= monthEnd) amt = x.amount || 0;
       }
       else if (freq === 'once' && x.onceDate) {
-        const d = new Date(x.onceDate);
+        const d = parseLocalDate(x.onceDate);
         if (d >= monthStart && d <= monthEnd) amt = x.amount || 0;
       }
       if (amt <= 0) return;
@@ -4108,7 +4137,7 @@ function MovementsScreen({ data, currency, hideAmounts, onSave, onDelete, onBulk
                   <div style={{ width: 38, height: 38, borderRadius: 11, flexShrink: 0, background: `${cat.color}1A`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={15} color={cat.color} strokeWidth={2.4} /></div>
                   <div style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>
                     <p className="truncate" style={{ fontSize: 13.5, fontWeight: 500, letterSpacing: '-0.005em' }}>{item.name}</p>
-                    <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1, fontWeight: 500 }}>{cat.name} · {item.frequency === 'once' ? (item.onceDate ? `Una vez · ${formatDateShort(new Date(item.onceDate))}` : 'Una vez') : item.frequency === 'biannual' ? `Semestral` : item.frequency === 'annual' ? `Anual` : `día ${item.dayOfMonth} · ${item.frequency === 'monthly' ? 'Mensual' : item.frequency === 'biweekly' ? 'Quincenal' : 'Semanal'}`}</p>
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1, fontWeight: 500 }}>{cat.name} · {item.frequency === 'once' ? (item.onceDate ? `Una vez · ${formatDateShort(parseLocalDate(item.onceDate))}` : 'Una vez') : item.frequency === 'biannual' ? `Semestral` : item.frequency === 'annual' ? `Anual` : `día ${item.dayOfMonth} · ${item.frequency === 'monthly' ? 'Mensual' : item.frequency === 'biweekly' ? 'Quincenal' : 'Semanal'}`}</p>
                   </div>
                   <span className="tabular" style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em', color: type === 'income' ? 'var(--primary)' : 'var(--danger)' }}>{type === 'income' ? '+' : '−'}{formatCompact(item.amount, currency, hideAmounts)}</span>
                 </button>
@@ -4477,7 +4506,7 @@ function PlanesScreen({ data, currency, hideAmounts, onUpdateSavings, onSavePlan
       return false;
     }).map(p => ({
       id: p.id, name: p.name, type: p.type,
-      targetDate: p.startDate ? new Date(p.startDate) : null,
+      targetDate: p.startDate ? parseLocalDate(p.startDate) : null,
       totalNeeded: (p.cost || 0) + (p.penaltyCost || 0),
     }));
     return {
@@ -4945,7 +4974,7 @@ function analyzePlan(plan, ctx) {
   const cur = plan.currency || 'COP';
 
   // Build a hypothetical projection WITH this plan included (for the analysis)
-  const planStart = plan.startDate ? new Date(plan.startDate) : null;
+  const planStart = plan.startDate ? parseLocalDate(plan.startDate) : null;
   const today = new Date(); today.setHours(0,0,0,0);
   const monthsUntilStart = planStart ? Math.max(0, Math.round((planStart - today) / (30.44 * 86400000))) : 0;
 
@@ -5007,7 +5036,7 @@ function analyzePlan(plan, ctx) {
   if (plan.type === 'savings') {
     // Use plan allocations from ctx (knows about ALL other plans competing for the flow)
     const planContrib = ctx.planContributions && ctx.planContributions[plan.id];
-    const targetDate = plan.startDate ? new Date(plan.startDate) : null;
+    const targetDate = plan.startDate ? parseLocalDate(plan.startDate) : null;
     const allocProj = ctx.allocatedProjection || baseProj;
 
     if (planContrib) {
@@ -5486,7 +5515,7 @@ function SavingsAdvisor({ data, projection, allocatedProjection, currency, hideA
   const totalBuffer = allocatedProjection.slice(0, periodMonths).reduce((s,m) => s + (m.allocation ? m.allocation.buffer : 0), 0);
 
   // Goal date from user
-  const goalDate = data.savings.goalDate ? new Date(data.savings.goalDate) : null;
+  const goalDate = data.savings.goalDate ? parseLocalDate(data.savings.goalDate) : null;
   let goalDateMonthIdx = -1;
   if (goalDate) {
     goalDateMonthIdx = allocatedProjection.findIndex(m => m.year === goalDate.getFullYear() && m.monthIdx === goalDate.getMonth());
@@ -5969,7 +5998,7 @@ function PlanForm({ initial, currency, financialContext, hideAmounts, onSave, on
             Ya tienes {financialContext.allFundablePlans.length} plan{financialContext.allFundablePlans.length > 1 ? 'es' : ''} de ahorro/compra activos. Al crear este, la app redistribuye automáticamente el flujo mensual: <strong style={{ color: 'var(--text)' }}>los planes con fecha más cercana tienen prioridad</strong>.
           </p>
           {(() => {
-            const formDate = form.startDate ? new Date(form.startDate) : null;
+            const formDate = form.startDate ? parseLocalDate(form.startDate) : null;
             if (!formDate) return null;
             const sooner = financialContext.allFundablePlans.filter(p => p.targetDate && p.targetDate < formDate);
             const later = financialContext.allFundablePlans.filter(p => p.targetDate && p.targetDate >= formDate);
@@ -6373,11 +6402,20 @@ function AuthScreen({ onLoggedIn }) {
   const [err, setErr] = useState('');
   const [info, setInfo] = useState('');
 
+  // Basic RFC-5322-lite email format check (good enough for client-side; server validates too)
+  const emailValid = (em) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em);
+  // Password strength: ≥8 chars, ≥1 letter, ≥1 number (low bar for usability)
+  const passwordStrong = (pw) => pw.length >= 8 && /[a-zA-Z]/.test(pw) && /\d/.test(pw);
+
   const submit = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     setErr(''); setInfo('');
     if (!email.trim()) { setErr('Escribe tu correo'); return; }
-    if (mode !== 'forgot' && password.length < 6) { setErr('La contraseña debe tener al menos 6 caracteres'); return; }
+    if (!emailValid(email.trim())) { setErr('Ese correo no parece válido'); return; }
+    if (mode !== 'forgot' && !passwordStrong(password)) {
+      setErr('La contraseña debe tener mínimo 8 caracteres, con letras y números');
+      return;
+    }
     if (mode === 'signup' && password !== password2) { setErr('Las contraseñas no coinciden'); return; }
     setBusy(true);
     try {
@@ -6626,8 +6664,12 @@ function FinanzasApp() {
 
   const handleLogout = async () => {
     if (!supabaseClient) return;
+    // Cancel any pending cloud upsert before signing out so we don't leak the
+    // current state to a stale session.
+    if (cloudSaveTimerRef.current) { clearTimeout(cloudSaveTimerRef.current); cloudSaveTimerRef.current = null; }
     await supabaseClient.auth.signOut();
     setSession(null);
+    setSyncStatus('idle');
     // Clear local cache so the next user starts fresh
     try { safeStorage.remove(STORAGE_KEY); } catch (e) {}
     setLoaded(false);
