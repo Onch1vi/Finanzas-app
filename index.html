@@ -1960,20 +1960,29 @@ function buildFinancialAdvice(data, currency) {
   // Step 1: If negative cashflow, fix it first
   if (surplus < 0) {
     const gap = -surplus;
+    // Top 5 biggest "discretionary" expenses (anything NOT housing/utilities/health)
+    const cuttable = (data.expenses || []).filter(e => e.active && !['housing', 'utilities', 'health'].includes(e.category))
+      .map(e => ({ name: e.name, category: e.category, monthly: getMonthlyEquivalent(e), freq: e.frequency }))
+      .sort((a, b) => b.monthly - a.monthly)
+      .slice(0, 5);
     const fixHints = [];
     if (out.leaks.length > 0) {
       const savable = out.leaks.reduce((s, l) => s + l.potentialSavings, 0);
-      if (savable >= gap * 0.7) {
-        fixHints.push(`Cortando los "gastos hormiga" detectados abajo recuperas ~${formatMoney(savable, currency)}/mes — casi cierra la brecha.`);
+      if (savable >= gap * 0.5) {
+        fixHints.push(`Cortando los gastos detectados como "fugas" recuperas ~${formatMoney(savable, currency)}/mes${savable >= gap ? ' — alcanza para cerrar la brecha completa' : ''}.`);
       }
     }
     if (cashOnHand < gap * 2) fixHints.push('Tu efectivo no aguanta más de 1-2 meses así. Es urgente.');
+    if (cuttable.length > 0) {
+      fixHints.push(`Tus 3 gastos discrecionales más altos: ${cuttable.slice(0, 3).map(c => `${c.name} (${formatMoney(c.monthly, currency)})`).join(', ')}. Reducirlos a la mitad libera ${formatMoney(cuttable.slice(0,3).reduce((s,c) => s + c.monthly, 0) * 0.5, currency)}/mes.`);
+    }
     out.steps.push({
       n: 1, icon: '🚨', priority: 'urgent', color: 'var(--danger)',
       title: 'Cierra la brecha del mes',
       action: `Gastas ${formatMoney(gap, currency)} más de lo que entra cada mes`,
-      how: fixHints.length > 0 ? fixHints.join(' ') : `Reduce gastos por al menos ${formatMoney(gap, currency)}/mes o busca un ingreso extra. Mira la sección de fugas abajo.`,
+      how: fixHints.length > 0 ? fixHints.join(' ') : `Reduce gastos por al menos ${formatMoney(gap, currency)}/mes o busca un ingreso extra.`,
       amountPerMonth: gap,
+      cuttableExpenses: cuttable,
     });
   }
 
@@ -2676,6 +2685,20 @@ function FinancialAdvisorCard({ data, currency, hideAmounts, onNavigate }) {
                     {fmt(step.amountPerMonth)}/mes
                   </p>
                 )}
+                {/* Concrete expense list for "close the gap" step */}
+                {expanded && step.cuttableExpenses && step.cuttableExpenses.length > 0 && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
+                    <p style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 6 }}>Candidatos a recortar</p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {step.cuttableExpenses.map((c, i) => (
+                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>
+                          <span className="truncate" style={{ color: 'var(--text-dim)' }}>{c.name}</span>
+                          <span className="tabular" style={{ fontWeight: 600, color: 'var(--danger)' }}>{fmt(c.monthly)}/mes</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -2870,6 +2893,47 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
   const thisMonthFlow = projection[0] ? projection[0].cashFlow : monthlyNet;
   const lastDebtMonth = projection.find(m => m.debtsOutstanding === 0 && projection.indexOf(m) > 0);
   const futurePositive = monthlyNet < 0 && projection.find(m => m.cashFlow >= 0 && projection.indexOf(m) > 0);
+  // Build "why" explanation for futurePositive: what changes between previous month and this one?
+  const futurePositiveReason = useMemo(() => {
+    if (!futurePositive) return null;
+    const idx = projection.indexOf(futurePositive);
+    if (idx <= 0) return null;
+    const prev = projection[idx - 1];
+    const reasons = [];
+    // Debts ending: any debt that ends in the prev month (so the savings free up)
+    const endingDebts = [];
+    // Walk months 0..idx and collect debts that ended at any point before futurePositive
+    for (let i = 0; i <= idx; i++) {
+      if (projection[i].debtsEndingThisMonth && projection[i].debtsEndingThisMonth.length > 0) {
+        projection[i].debtsEndingThisMonth.forEach(name => {
+          // Find the debt to estimate the freed amount
+          const debt = data.debts.find(d => d.name === name);
+          if (debt) endingDebts.push({ name, freed: debt.minimumPayment || 0, month: projection[i] });
+        });
+      }
+    }
+    if (endingDebts.length > 0) {
+      const totalFreed = endingDebts.reduce((s, e) => s + e.freed, 0);
+      reasons.push(`Para esa fecha ya termina${endingDebts.length === 1 ? '' : 'n'} ${endingDebts.map(e => `"${e.name}"`).join(', ')}, liberando ${formatMoney(totalFreed, currency, hideAmounts)}/mes que antes pagabas en cuotas.`);
+    }
+    // Income change: an income that starts before this month
+    const incomeStarts = (data.incomes || []).filter(i => i.active && i.frequency === 'once' && i.onceDate)
+      .filter(i => {
+        const d = new Date(i.onceDate);
+        return d.getFullYear() < futurePositive.year || (d.getFullYear() === futurePositive.year && d.getMonth() <= futurePositive.monthIdx);
+      });
+    if (incomeStarts.length > 0) {
+      reasons.push(`Recibirás ${incomeStarts.map(i => `${formatMoney(i.amount, currency, hideAmounts)} (${i.name})`).join(' + ')} ese mes.`);
+    }
+    // Cashflow delta vs previous month
+    const delta = futurePositive.cashFlow - prev.cashFlow;
+    if (reasons.length === 0 && delta > 0) {
+      reasons.push(`Tu flujo mejora en ${formatMoney(delta, currency, hideAmounts)} respecto al mes anterior por cambios en tus deudas activas.`);
+    }
+    // Explicit date: first day of that month (granular monthly)
+    const date = new Date(futurePositive.year, futurePositive.monthIdx, 1);
+    return { date, reasons };
+  }, [futurePositive, projection, data.debts, data.incomes, currency, hideAmounts]);
 
   // Smart allocation for this-month plan card
   const allocatedProjection = useMemo(() => {
@@ -3195,20 +3259,27 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
         </div>
 
         {(futurePositive || lastDebtMonth) && (
-          <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: 10 }}>
             {futurePositive && (
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <Info size={13} color="var(--primary)" style={{ flexShrink: 0, marginTop: 2 }} />
-                <p style={{ fontSize: 11.5, color: 'var(--text-dim)', lineHeight: 1.45 }}>
-                  <strong style={{ color: 'var(--primary)', fontWeight: 600 }}>{futurePositive.fullLabel}</strong>: tu flujo cambia a positivo cuando se reducen tus deudas
-                </p>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.45 }}>
+                    Vuelves a flujo positivo el <strong style={{ color: 'var(--primary)', fontWeight: 600 }}>{futurePositiveReason ? formatDate(futurePositiveReason.date) : futurePositive.fullLabel}</strong>
+                  </p>
+                  {futurePositiveReason && futurePositiveReason.reasons.length > 0 && (
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.45, marginTop: 4 }}>
+                      <strong style={{ color: 'var(--text-dim)' }}>Por qué: </strong>{futurePositiveReason.reasons.join(' ')}
+                    </p>
+                  )}
+                </div>
               </div>
             )}
             {lastDebtMonth && (
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <CheckCircle2 size={13} color="var(--primary)" style={{ flexShrink: 0, marginTop: 2 }} />
-                <p style={{ fontSize: 11.5, color: 'var(--text-dim)', lineHeight: 1.45 }}>
-                  Libre de deudas en <strong style={{ color: 'var(--primary)', fontWeight: 600 }}>{lastDebtMonth.fullLabel}</strong>
+                <p style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.45 }}>
+                  Libre de deudas el <strong style={{ color: 'var(--primary)', fontWeight: 600 }}>{formatDate(new Date(lastDebtMonth.year, lastDebtMonth.monthIdx, 1))}</strong> — esa cuota mensual queda disponible para ti
                 </p>
               </div>
             )}
@@ -3851,7 +3922,14 @@ function MovementsScreen({ data, currency, hideAmounts, onSave, onDelete, onBulk
   const [creating, setCreating] = useState(false);
   const [servicesOpen, setServicesOpen] = useState(false);
   const items = type === 'income' ? data.incomes : data.expenses;
-  const total = items.filter(x => x.active).reduce((s,x) => s + getMonthlyEquivalent(x), 0);
+  // Split: "constant" = things that hit every month (monthly/biweekly/weekly).
+  //        "extras"   = things averaged across the year (biannual/annual/once-this-year).
+  // This is what users mentally call "what arrives in my account each month" vs "bonuses/primas".
+  const constantTotal = items.filter(x => x.active && (!x.frequency || x.frequency === 'monthly' || x.frequency === 'biweekly' || x.frequency === 'weekly'))
+    .reduce((s,x) => s + getMonthlyEquivalent(x), 0);
+  const extrasTotal = items.filter(x => x.active && (x.frequency === 'biannual' || x.frequency === 'annual' || x.frequency === 'once'))
+    .reduce((s,x) => s + getMonthlyEquivalent(x), 0);
+  const total = constantTotal + extrasTotal; // (kept for backward compat in this scope)
   const byCategory = useMemo(() => {
     const map = {};
     items.filter(x => x.active).forEach(x => {
@@ -3939,14 +4017,27 @@ function MovementsScreen({ data, currency, hideAmounts, onSave, onDelete, onBulk
         }} />
         <div className="flex items-center gap-1.5 mb-3">
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: type === 'income' ? 'var(--primary)' : 'var(--danger)', boxShadow: `0 0 10px ${type === 'income' ? 'var(--primary)' : 'var(--danger)'}` }} />
-          <p style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>{type === 'income' ? 'Ingresos mensuales' : 'Egresos mensuales'}</p>
+          <p style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>{type === 'income' ? 'Llega cada mes' : 'Sale cada mes'}</p>
         </div>
         <h2 className="display-font animate-count tabular" style={{
           fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1,
           color: type === 'income' ? 'var(--primary)' : 'var(--danger)',
         }}>
-          {type === 'income' ? '+' : '−'}{formatMoney(total, currency, hideAmounts)}
+          {type === 'income' ? '+' : '−'}{formatMoney(constantTotal, currency, hideAmounts)}
         </h2>
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, fontWeight: 500 }}>
+          Solo lo que se repite cada mes (mensual, quincenal, semanal)
+        </p>
+        {extrasTotal > 0 && (
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed rgba(255,255,255,0.06)', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+              + Primas y {type === 'income' ? 'bonos puntuales' : 'gastos puntuales'} (promedio /12 meses)
+            </span>
+            <span className="tabular" style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--accent)' }}>
+              {formatCompact(extrasTotal, currency, hideAmounts)}
+            </span>
+          </div>
+        )}
         {monthBreakdown.hasAny && (
           <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -4172,7 +4263,7 @@ function MovementForm({ type, initial, currency, onSave, onDelete }) {
           {[
             { v: 'monthly', l: 'Mensual' },
             { v: 'biweekly', l: 'Quincenal' },
-            { v: 'biannual', l: 'Semestral (prima)' },
+            { v: 'biannual', l: type === 'income' ? 'Semestral (prima)' : 'Cada 6 meses' },
             { v: 'annual', l: 'Anual' },
             { v: 'once', l: 'Una sola vez', span: 2 },
           ].map(o => (
