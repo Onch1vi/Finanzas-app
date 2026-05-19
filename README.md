@@ -1,85 +1,104 @@
 # Finanzas App
 
-Single-page PWA para finanzas personales: deudas, ingresos, egresos, planes y proyección — con simulación día-a-día del mes actual y fechas exactas para metas.
+PWA personal de finanzas: deudas con fecha futura, balance real día a día, asesor con plan paso-a-paso, sync entre dispositivos, presupuestos por categoría, net worth histórico, 2FA, y notificaciones nativas.
 
-## Sync entre dispositivos (Supabase)
+Stack: **React 18 + Vite + Supabase** · Hosting: **Vercel** (o Netlify).
 
-La app puede sincronizar tus datos entre PC y celular con login privado. **Solo tú ves tus datos** gracias a Row Level Security.
+---
 
-👉 Guía paso a paso en [`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md) (~5 minutos)
-
-Mientras no configures Supabase, la app funciona en modo local (solo guarda en este dispositivo).
-
-## Cambios recientes
-
-### Sync entre dispositivos (nuevo)
-- Login con email/contraseña.
-- Tus datos viven en una fila privada de Supabase con RLS — nadie más puede leerlos.
-- Sync automático al cambiar algo, debounced 1.2s.
-- Si te logueas por primera vez con datos locales, se suben a la nube automáticamente.
-- Estado de sync visible en Ajustes ("Sincronizando…" / "Sincronizado").
-
-### Tema "Studio" (nuevo)
-- Paleta crema/púrpura con tipografía serif (Fraunces) y acento manuscrito (Caveat).
-- Inspirado en interfaces tipo "journal" (papel + acentos pintados a mano).
-- Activable en **Ajustes → Tema → Studio**.
-- Los temas oscuros existentes siguen disponibles.
-
-### Lógica de fechas y balance real
-1. **Balance real "hoy"** — `savings.currentBalance` guarda tu efectivo disponible. La app simula día a día desde hoy hasta fin de mes considerando lo confirmado y lo pendiente.
-2. **Cuándo entras en negativo y cuándo recuperas** — fechas exactas en la tarjeta "Tu plata hoy".
-3. **Deudas con fecha futura de inicio** — `debt.startDate` permite registrar una deuda cuya primera cuota es en el futuro (ej. julio). Hasta entonces no descuenta nada de tu flujo.
-4. **Plan de pagos visible** — al crear una deuda, ves cuántas cuotas tomará y la fecha exacta de la última.
-5. **Fechas clave en el dashboard** — fecha exacta para: meta de ahorro, libre de deudas, estabilidad recuperada.
-
-## Despliegue
-
-### Vercel
-1. Importa el repo en https://vercel.com/new (no necesita build, ya está configurado por `vercel.json`).
-2. Después de la primera URL, sigue [`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md) si quieres sync.
-
-### Netlify
-Drag-and-drop el repo en netlify.com o conecta el repo. `netlify.toml` ya está configurado.
-
-### GitHub Pages
-Settings → Pages → Branch `main`, folder `/`.
-
-## Desarrollo local
+## Setup local
 
 ```bash
-python3 -m http.server 8000
-# abre http://localhost:8000
+npm install
+npm run dev    # arranca Vite en http://localhost:5173
 ```
 
-## Estructura
+Para usar la sync en local, crea `.env.local`:
 
-- `index.html` — toda la app (React + estilos inline + Babel standalone)
-- `vercel.json`, `netlify.toml` — config de hosting
-- `SUPABASE_SETUP.md` — guía de sync en la nube
-- `.gitignore`
+```
+VITE_SUPABASE_URL=https://xxxx.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJhbGc...
+```
 
-## Modelo de datos
+Sin estas variables la app funciona en modo offline-only (localStorage).
+
+---
+
+## Build de producción
+
+```bash
+npm run build       # output en dist/
+npm run preview     # sirve dist/ para probar
+```
+
+---
+
+## Despliegue en Vercel
+
+1. Importa el repo en https://vercel.com/new.
+2. **Settings → Environment Variables** → añade `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY` (ver [`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md)).
+3. Cada push a `main` deploya automáticamente. El `vercel.json` ya está configurado para `npm run build` con output en `dist/`.
+
+## Despliegue en Netlify
+
+Igual, `netlify.toml` configurado. Variables en **Site configuration → Environment variables**.
+
+---
+
+## Estructura del proyecto
+
+```
+finanzas-app/
+├── index.html                # entry de Vite (~50 líneas, minimal)
+├── src/
+│   ├── main.jsx              # punto de entrada, registra SW
+│   ├── App.jsx               # toda la app React (~7000 líneas, intencional)
+│   └── styles.css            # CSS global con variables de tema
+├── public/
+│   ├── manifest.webmanifest  # PWA manifest
+│   └── sw.js                 # service worker
+├── package.json
+├── vite.config.js
+├── vercel.json
+├── netlify.toml
+├── SUPABASE_SETUP.md         # setup de sync
+├── MFA_SETUP.md              # setup de 2FA
+└── SECURITY_AUDIT.md         # audit de seguridad
+```
+
+---
+
+## Funcionalidades principales
+
+- **Deudas con fecha futura**: registra deudas cuya primera cuota es en el futuro (ej. julio).
+- **Balance real "hoy"**: simulación día a día del mes con fechas exactas en que entras/sales de negativo.
+- **Asesor financiero**: plan numerado con montos específicos, fechas y "fugas" detectadas.
+- **Sync con conflict resolution**: nunca pisa cambios de tu otro dispositivo sin preguntar.
+- **Presupuestos por categoría**: tope mensual con progreso visual.
+- **Net worth histórico**: gráfica de patrimonio neto mes a mes.
+- **2FA opcional**: TOTP vía Google/Microsoft Authenticator.
+- **Notifs nativas vía SW**: funcionan en iOS PWA (16.4+) y persisten en Android.
+- **CSV / JSON export + import**: para contador, declaración o backup.
+- **Tema "Studio" claro**: paleta crema + serif elegante, además de los 7 oscuros.
+
+---
+
+## Modelo de datos (en Supabase: una fila por usuario en `user_data.data`)
 
 ```js
 {
-  user: { name, currency, themeOverride },  // themeOverride incluye 'studio'
-  savings: {
-    currentBalance,        // efectivo hoy (alimenta el balance real)
-    balanceUpdatedAt,
-    current,               // ahorros formales
-    goal, goalDate,
-    emergencyMonths, lifeBudgetPct, bufferPct, minLifeBudget
-  },
+  user: { name, currency, themeOverride },
+  savings: { currentBalance, current, goal, goalDate, emergencyMonths,
+             lifeBudgetPct, bufferPct, minLifeBudget, balanceUpdatedAt },
   debts: [{ id, name, totalAmount, paidAmount, minimumPayment,
-            paymentDay, interestRate,
-            startDate,    // cuándo empieza la primera cuota (futuro permitido)
-            archived, notes }],
-  incomes: [...], expenses: [...], plans: [...],
-  confirmations: { 'YYYY-MM': { 'inc-id': {...}, 'exp-id': {...} } },
+            paymentDay, interestRate, startDate, archived, notes }],
+  incomes: [{ id, name, amount, frequency, dayOfMonth, anchorDate, ... }],
+  expenses: [{ id, name, amount, frequency, dayOfMonth, anchorDate, ... }],
+  plans: [...],
   transactions: [...],
-  settings: { hideAmounts, notificationsEnabled }
+  budgets: { [categoryId]: monthlyLimit },
+  confirmations: { 'YYYY-MM': { [`exp-id-...`]: {...} } },
+  netWorthHistory: [{ monthKey, date, cash, savings, debts, netWorth }],
+  settings: { hideAmounts, notificationsEnabled, lastBackupAt },
 }
 ```
-
-Cuando Supabase está configurado y has iniciado sesión, este JSON se guarda en la fila `user_data` de tu cuenta.
-

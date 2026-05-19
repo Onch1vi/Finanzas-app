@@ -5,3 +5,12 @@ node_modules
 .env
 .env.local
 *.log
+
+# Vite build output
+dist
+*.tsbuildinfo
+
+# Editor
+.idea
+.vscode/*
+!.vscode/settings.json
