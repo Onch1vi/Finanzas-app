@@ -5,7 +5,7 @@
 // - CDN libs (React, Babel, Supabase): cache-first (immutable URLs).
 // - Supabase API calls: network-only — auth/data must always be fresh.
 
-const CACHE_VERSION = 'v4';
+const CACHE_VERSION = 'v5';
 const APP_CACHE = `finanzas-app-${CACHE_VERSION}`;
 const CDN_CACHE = `finanzas-cdn-${CACHE_VERSION}`;
 
@@ -83,4 +83,50 @@ self.addEventListener('fetch', (event) => {
 // Allow the page to ask the SW to skip waiting on update
 self.addEventListener('message', (event) => {
   if (event.data === 'SKIP_WAITING') self.skipWaiting();
+});
+
+// === NOTIFICATION HANDLING ===
+// When the user taps a notification, focus an existing tab or open a new one.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of allClients) {
+      if (client.url.startsWith(self.location.origin)) {
+        await client.focus();
+        return;
+      }
+    }
+    await self.clients.openWindow('/');
+  })());
+});
+
+// === PERIODIC BACKGROUND SYNC ===
+// Chrome (Android & desktop) wakes the SW once a day. We re-check pending
+// payments stored in localStorage-mirrored IndexedDB cache... but we don't have
+// one. Instead we just message any open client to refresh; if no client is open
+// we silently skip (true server-push would require backend infrastructure).
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag === 'check-payments') {
+    event.waitUntil((async () => {
+      const clientsList = await self.clients.matchAll({ type: 'window' });
+      clientsList.forEach((c) => c.postMessage({ type: 'CHECK_PAYMENTS' }));
+    })());
+  }
+});
+
+// === PUSH HANDLER (placeholder) ===
+// If we ever add a backend push service, it would land here.
+self.addEventListener('push', (event) => {
+  if (!event.data) return;
+  let payload = {};
+  try { payload = event.data.json(); } catch (e) { payload = { title: 'Finanzas', body: event.data.text() }; }
+  event.waitUntil(
+    self.registration.showNotification(payload.title || 'Finanzas', {
+      body: payload.body || '',
+      tag: payload.tag,
+      data: payload.data || {},
+      badge: '/icon-badge.png',
+    })
+  );
 });

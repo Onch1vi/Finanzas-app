@@ -2188,6 +2188,31 @@ function buildFinancialAdvice(data, currency) {
 }
 
 // ============================================================================
+//  NET WORTH — patrimonio neto histórico
+//  Net worth = efectivo + ahorros formales - deudas activas (no archivadas).
+//  Snapshots automáticos al cambiar de mes para construir la serie histórica.
+// ============================================================================
+function computeCurrentNetWorth(data) {
+  const cash = (data.savings && data.savings.currentBalance) || 0;
+  const savings = (data.savings && data.savings.current) || 0;
+  const debts = (data.debts || []).filter(d => !d.archived)
+    .reduce((s, d) => s + Math.max(0, (d.totalAmount || 0) - (d.paidAmount || 0)), 0);
+  const netWorth = cash + savings - debts;
+  return { cash, savings, debts, netWorth };
+}
+
+// Capture a snapshot for a given month if missing. Returns updated history.
+function captureNetWorthSnapshot(history, monthKey, snapshot) {
+  const list = Array.isArray(history) ? [...history] : [];
+  const existing = list.findIndex(h => h.monthKey === monthKey);
+  const entry = { monthKey, date: new Date().toISOString(), ...snapshot };
+  if (existing >= 0) list[existing] = entry; else list.push(entry);
+  // Keep sorted ascending by monthKey and capped at 60 months (5 years)
+  list.sort((a, b) => a.monthKey.localeCompare(b.monthKey));
+  return list.slice(-60);
+}
+
+// ============================================================================
 //  BUDGETS — per-category monthly limit
 //  Stored in data.budgets = { 'food': 1500000, 'leisure': 300000, ... }
 //  Spending tracked from BOTH the recurring monthly equivalent AND any
@@ -3016,6 +3041,102 @@ function FinancialAdvisorCard({ data, currency, hideAmounts, onNavigate }) {
   );
 }
 
+// === NET WORTH HISTORY card ===
+// Shows the historical trend of (cash + savings - debts) with an area chart.
+// Tells the user direction (up/down) and how much in the last 6 months.
+function NetWorthCard({ data, currency, hideAmounts }) {
+  const history = (data.netWorthHistory || []).slice(-12); // last 12 months max
+  const current = useMemo(() => computeCurrentNetWorth(data), [data]);
+  if (history.length < 2) {
+    // Not enough history yet — show current value + hint
+    return (
+      <div className="animate-slideup card-elevated" style={{ padding: 18 }}>
+        <div className="flex items-center gap-2 mb-3">
+          <TrendingUp size={14} color="var(--primary)" />
+          <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Patrimonio neto</span>
+        </div>
+        <h2 className="display-font tabular" style={{ fontSize: 30, fontWeight: 500, letterSpacing: '-0.03em', color: current.netWorth >= 0 ? 'var(--text)' : 'var(--danger)' }}>
+          {formatMoney(current.netWorth, currency, hideAmounts)}
+        </h2>
+        <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.5 }}>
+          Efectivo {formatCompact(current.cash, currency, hideAmounts)} + ahorros {formatCompact(current.savings, currency, hideAmounts)} − deudas {formatCompact(current.debts, currency, hideAmounts)}
+        </p>
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10, fontStyle: 'italic' }}>
+          La gráfica histórica aparece después de 2 meses con datos.
+        </p>
+      </div>
+    );
+  }
+  const first = history[0].netWorth;
+  const last = history[history.length - 1].netWorth;
+  const delta = last - first;
+  const pctChange = first !== 0 ? (delta / Math.abs(first)) * 100 : 0;
+  const trend = delta >= 0 ? 'up' : 'down';
+  // Min/max for the chart Y axis
+  const values = history.map(h => h.netWorth);
+  const yMin = Math.min(...values, 0);
+  const yMax = Math.max(...values, 0);
+  const range = yMax - yMin || 1;
+  const chartHeight = 90;
+  const chartPad = 8;
+  const chartWidth = 300;
+  const stepX = history.length > 1 ? (chartWidth - chartPad * 2) / (history.length - 1) : 0;
+  const points = history.map((h, i) => {
+    const x = chartPad + i * stepX;
+    const y = chartPad + (1 - (h.netWorth - yMin) / range) * (chartHeight - chartPad * 2);
+    return { x, y, h };
+  });
+  const pathLine = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+  const pathArea = pathLine + ` L ${points[points.length - 1].x.toFixed(1)} ${(chartHeight - chartPad).toFixed(1)} L ${points[0].x.toFixed(1)} ${(chartHeight - chartPad).toFixed(1)} Z`;
+  const trendColor = trend === 'up' ? 'var(--primary)' : 'var(--danger)';
+  return (
+    <div className="animate-slideup card-elevated" style={{ padding: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div className="flex items-center gap-2">
+          {trend === 'up' ? <TrendingUp size={14} color="var(--primary)" /> : <TrendingDown size={14} color="var(--danger)" />}
+          <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Patrimonio neto</span>
+        </div>
+        <span className="tabular" style={{ fontSize: 11, fontWeight: 600, color: trendColor }}>
+          {delta >= 0 ? '+' : ''}{formatCompact(delta, currency, hideAmounts)} ({pctChange.toFixed(1)}%)
+        </span>
+      </div>
+      <h2 className="display-font tabular" style={{ fontSize: 32, fontWeight: 500, letterSpacing: '-0.03em', color: last >= 0 ? 'var(--text)' : 'var(--danger)' }}>
+        {formatMoney(last, currency, hideAmounts)}
+      </h2>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+        Efectivo {formatCompact(current.cash, currency, hideAmounts)} + ahorros {formatCompact(current.savings, currency, hideAmounts)} − deudas {formatCompact(current.debts, currency, hideAmounts)}
+      </p>
+
+      {/* Inline SVG sparkline chart */}
+      <div style={{ marginTop: 14, position: 'relative' }}>
+        <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" style={{ width: '100%', height: 90 }}>
+          <defs>
+            <linearGradient id="nwGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={trendColor} stopOpacity="0.35" />
+              <stop offset="100%" stopColor={trendColor} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          {/* Zero line if range crosses zero */}
+          {yMin < 0 && yMax > 0 && (
+            <line x1={chartPad} y1={chartPad + (1 - (0 - yMin) / range) * (chartHeight - chartPad * 2)}
+                  x2={chartWidth - chartPad} y2={chartPad + (1 - (0 - yMin) / range) * (chartHeight - chartPad * 2)}
+                  stroke="var(--border-strong)" strokeWidth="0.5" strokeDasharray="2 3" />
+          )}
+          <path d={pathArea} fill="url(#nwGradient)" />
+          <path d={pathLine} fill="none" stroke={trendColor} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          {points.map((p, i) => (
+            <circle key={i} cx={p.x} cy={p.y} r={i === points.length - 1 ? 3 : 0} fill={trendColor} />
+          ))}
+        </svg>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 9.5, color: 'var(--text-muted)' }}>
+          <span>{history[0].monthKey}</span>
+          <span>{history[history.length - 1].monthKey}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTransaction, onConfirm, onConfirmDebt }) {
   const { debts, incomes, expenses, transactions } = data;
 
@@ -3554,6 +3675,9 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
 
       {/* === REAL BALANCE TODAY: live cash on hand + day-by-day simulation === */}
       <RealBalanceCard sim={dailySim} savings={data.savings} currency={currency} hideAmounts={hideAmounts} onNavigate={onNavigate} />
+
+      {/* === NET WORTH: historical trend === */}
+      <NetWorthCard data={data} currency={currency} hideAmounts={hideAmounts} />
 
       {/* === FINANCIAL ADVISOR: step-by-step plan with specific amounts === */}
       <FinancialAdvisorCard data={data} currency={currency} hideAmounts={hideAmounts} onNavigate={onNavigate} />
@@ -7179,6 +7303,38 @@ function FinanzasApp() {
     return () => { cancelled = true; };
   }, [session, authChecking]);
 
+  // Auto-capture net worth snapshots on load and whenever the month changes.
+  // We capture for the CURRENT month so the chart always has the latest data;
+  // and we also backfill the PREVIOUS month if it's missing (avoids gaps).
+  useEffect(() => {
+    if (!loaded) return;
+    const now = new Date();
+    const curMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevMonthKey = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+    updateData(d => {
+      const snap = computeCurrentNetWorth(d);
+      let history = d.netWorthHistory || [];
+      // Backfill last month if missing — same numbers as today (best estimate)
+      const hasPrev = history.find(h => h.monthKey === prevMonthKey);
+      if (!hasPrev && history.length === 0) {
+        history = captureNetWorthSnapshot(history, prevMonthKey, snap);
+      }
+      history = captureNetWorthSnapshot(history, curMonthKey, snap);
+      return { ...d, netWorthHistory: history };
+    });
+    // Re-check every hour in case the user keeps the app open across month change
+    const id = setInterval(() => {
+      const now2 = new Date();
+      const k = `${now2.getFullYear()}-${String(now2.getMonth() + 1).padStart(2, '0')}`;
+      updateData(d => ({
+        ...d,
+        netWorthHistory: captureNetWorthSnapshot(d.netWorthHistory || [], k, computeCurrentNetWorth(d)),
+      }));
+    }, 60 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [loaded]);
+
   // saveData: always write localStorage; if cloud + logged in, debounce a cloud upsert
   // with optimistic concurrency. If another device wrote after our last load,
   // we don't overwrite — we surface a conflict dialog so the user can choose.
@@ -7245,37 +7401,101 @@ function FinanzasApp() {
     });
   }, [saveData]);
 
-  // Notifications scheduler
+  // Notifications scheduler — uses the Service Worker for showing notifications
+  // (works on iOS 16.4+ when installed as PWA, plus better persistence on Android).
+  // Falls back to `new Notification(...)` if no SW is registered.
   useEffect(() => {
     if (notifPermission !== 'granted') return;
-    const sentSet = new Set();
+    let swReg = null;
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready.then(r => { swReg = r; }).catch(() => {});
+    }
+    // Try to enable periodic background sync (Chrome only) — wakes the SW
+    // once a day to message the page that something might need checking.
+    if ('serviceWorker' in navigator && 'permissions' in navigator) {
+      navigator.permissions.query({ name: 'periodic-background-sync' }).then((status) => {
+        if (status.state === 'granted') {
+          navigator.serviceWorker.ready.then(reg => {
+            if ('periodicSync' in reg) {
+              reg.periodicSync.register('check-payments', { minInterval: 24 * 60 * 60 * 1000 }).catch(() => {});
+            }
+          });
+        }
+      }).catch(() => {});
+    }
+
+    const sentKey = (k) => 'finanzas-notif-sent-' + k;
+    const wasSent = (k) => {
+      try { return !!localStorage.getItem(sentKey(k)); } catch (e) { return false; }
+    };
+    const markSent = (k) => {
+      try { localStorage.setItem(sentKey(k), '1'); } catch (e) {}
+    };
+
+    const showNotif = (title, options) => {
+      // Prefer the service worker registration (works on iOS PWA + persistent)
+      if (swReg) {
+        try { swReg.showNotification(title, { ...options, icon: undefined, badge: undefined }); return; }
+        catch (e) {}
+      }
+      try { new Notification(title, options); } catch (e) {}
+    };
+
     const checkNotifs = () => {
       const now = new Date();
-      data.debts.forEach(d => {
+      const todayStr = now.toDateString();
+      // Debts
+      (data.debts || []).forEach(d => {
         if (d.archived) return;
-        const remaining = d.totalAmount - (d.paidAmount || 0);
+        const remaining = (d.totalAmount || 0) - (d.paidAmount || 0);
         if (remaining <= 0) return;
         if (isDebtFutureStart(d, now)) return;
         const next = getDebtNextPaymentDate(d, now);
         const days = daysBetween(now, next);
-        const key = `${d.id}-${days}-${now.toDateString()}`;
-        if ((days === 1 || days === 0) && !sentSet.has(key)) {
-          try {
-            new Notification(`Recordatorio: ${d.name}`, {
-              body: days === 0 ? `Hoy vence tu pago de ${formatMoney(d.minimumPayment, data.user.currency)}` : `Mañana vence tu pago de ${formatMoney(d.minimumPayment, data.user.currency)}`,
-              tag: key,
-            });
-            sentSet.add(key);
-          } catch (e) {}
+        const key = `debt-${d.id}-${days}-${todayStr}`;
+        if ((days === 1 || days === 0) && !wasSent(key)) {
+          showNotif(`Recordatorio: ${d.name}`, {
+            body: days === 0
+              ? `Hoy vence tu pago de ${formatMoney(d.minimumPayment, data.user.currency)}`
+              : `Mañana vence tu pago de ${formatMoney(d.minimumPayment, data.user.currency)}`,
+            tag: key,
+            renotify: false,
+          });
+          markSent(key);
         }
+      });
+      // Recurring expenses due tomorrow or today (only if not confirmed for this month)
+      const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const confirms = (data.confirmations && data.confirmations[monthKey]) || {};
+      (data.expenses || []).filter(e => e.active && (e.frequency === 'monthly' || e.frequency === 'biweekly')).forEach(e => {
+        const day = Math.min(e.dayOfMonth || 1, 28);
+        const due = new Date(now.getFullYear(), now.getMonth(), day);
+        const days = daysBetween(now, due);
+        if (days !== 0 && days !== 1) return;
+        if (confirms[`exp-${e.id}-${monthKey}`]) return;
+        const key = `exp-${e.id}-${monthKey}-${days}`;
+        if (wasSent(key)) return;
+        showNotif(`Recordatorio: ${e.name}`, {
+          body: days === 0
+            ? `Hoy pagas ${formatMoney(e.amount, data.user.currency)}`
+            : `Mañana pagas ${formatMoney(e.amount, data.user.currency)}`,
+          tag: key,
+        });
+        markSent(key);
       });
     };
     checkNotifs();
-    const interval = setInterval(checkNotifs, 60000);
+    const interval = setInterval(checkNotifs, 60 * 60 * 1000); // every hour
     const onFocus = () => checkNotifs();
+    const onSwMessage = (ev) => { if (ev.data && ev.data.type === 'CHECK_PAYMENTS') checkNotifs(); };
     window.addEventListener('focus', onFocus);
-    return () => { clearInterval(interval); window.removeEventListener('focus', onFocus); };
-  }, [data.debts, data.user.currency, notifPermission]);
+    if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', onSwMessage);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      if ('serviceWorker' in navigator) navigator.serviceWorker.removeEventListener('message', onSwMessage);
+    };
+  }, [data.debts, data.expenses, data.confirmations, data.user.currency, notifPermission]);
 
   const handleSaveDebt = (debt) => {
     let wasNew = true;
@@ -7529,7 +7749,15 @@ function FinanzasApp() {
     const perm = await Notification.requestPermission();
     setNotifPermission(perm);
     if (perm === 'granted') {
-      try { new Notification('✓ Notificaciones activadas', { body: 'Te avisaremos antes de cada pago.' }); } catch (e) {}
+      try {
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.ready.then(reg => reg.showNotification('✓ Notificaciones activadas', {
+            body: 'Te avisaremos antes de cada pago, incluso si cierras la app.', tag: 'welcome-notif',
+          }));
+        } else {
+          new Notification('✓ Notificaciones activadas', { body: 'Te avisaremos antes de cada pago.' });
+        }
+      } catch (e) {}
       setToast('Notificaciones activadas');
     } else setToast('Notificaciones no activadas');
   };
