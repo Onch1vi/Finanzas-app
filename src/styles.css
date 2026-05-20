@@ -232,13 +232,17 @@
       column-span: all; -webkit-column-span: all;
       margin-bottom: 18px;
     }
-    /* FAB: keep it a perfect circle, fixed to viewport bottom-right */
-    .finanzas-app.desktop-layout .fab {
+    /* FAB: keep it a perfect circle, fixed to viewport bottom-right.
+       max-width guards against any inherited stretch; aspect-ratio locks the circle. */
+    .finanzas-app.desktop-layout .fab,
+    .desktop-content .fab {
       position: fixed !important;
       right: 36px !important; bottom: 36px !important;
       left: auto !important; top: auto !important;
       width: 56px !important; height: 56px !important;
-      column-span: all;
+      max-width: 56px !important; min-width: 0 !important;
+      flex: none !important;
+      border-radius: 50% !important;
     }
     .desktop-content .pb-32 { padding-bottom: 0; }
   }
