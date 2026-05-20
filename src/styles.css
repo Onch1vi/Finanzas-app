@@ -174,67 +174,89 @@
   }
 
   /* ===================== DESKTOP LAYOUT (≥1024px) ===================== */
-  /* On wide screens the app drops the 480px phone column and uses a
-     left sidebar + wide content area that flows cards into 2 columns. */
-  .finanzas-app.desktop-layout { max-width: none; }
-  .finanzas-app.desktop-layout::before { max-width: 1100px; opacity: 0.5; }
+  /* On wide screens the app becomes a fixed dashboard: sidebar + topbar stay
+     pinned, only the content area scrolls internally (the page never scrolls).
+     Cards flow into responsive columns. */
+  .finanzas-app.desktop-layout { max-width: none; overflow: hidden; }
+  .finanzas-app.desktop-layout::before { max-width: 1100px; opacity: 0.45; }
   .desktop-shell {
     display: grid;
     grid-template-columns: 256px 1fr;
-    min-height: 100dvh;
+    height: 100dvh;
+    overflow: hidden;            /* no page-level scroll */
     position: relative;
     z-index: 10;
   }
   .desktop-sidenav {
-    position: sticky; top: 0; align-self: start;
     height: 100dvh;
+    overflow-y: auto;            /* internal scroll only if ever needed */
     display: flex; flex-direction: column;
     padding: 24px 16px;
     border-right: 1px solid var(--border);
     background: var(--surface);
   }
+  .desktop-sidenav::-webkit-scrollbar { width: 0; }
   .sidenav-item:hover { background: var(--surface-2) !important; color: var(--text) !important; }
   .desktop-main {
     min-width: 0;
-    padding: 0 0 40px;
-    max-width: 1180px;
-    width: 100%;
-    margin: 0 auto;
+    height: 100dvh;
+    overflow-y: auto;            /* the ONLY scrollable region */
+    display: flex; flex-direction: column;
   }
   .desktop-topbar {
+    position: sticky; top: 0; z-index: 6;
     display: flex; align-items: flex-end; justify-content: space-between;
-    padding: 28px 40px 16px;
+    padding: 26px 40px 14px;
+    background: linear-gradient(180deg, var(--bg) 70%, transparent);
+    backdrop-filter: blur(2px);
   }
-  .desktop-content { padding: 0 40px; }
-  /* Cards flow into a responsive masonry on the dashboard / movements */
-  .desktop-content .stagger {
-    column-gap: 20px;
-    padding-left: 0; padding-right: 0;
+  .desktop-content {
+    padding: 0 40px 48px;
+    max-width: 1240px; width: 100%; margin: 0 auto;
+    flex: 1;
   }
+  .desktop-content .stagger { padding-left: 0; padding-right: 0; }
   @media (min-width: 1024px) {
     .desktop-content .stagger { columns: 2; column-gap: 20px; }
-    /* Each direct card avoids breaking across columns */
-    .desktop-content .stagger > * {
+    /* Card flow — but never touch the floating FAB (it's position:fixed) */
+    .desktop-content .stagger > *:not(.fab) {
       break-inside: avoid;
       -webkit-column-break-inside: avoid;
       margin-bottom: 16px;
       width: 100%;
+      display: block;
     }
-    /* space-y utilities add margin-top that's redundant in column flow */
-    .desktop-content .stagger > * + * { margin-top: 0; }
-    /* The first card in each screen is a hero/summary — make it full width */
-    .desktop-content .stagger > *:first-child {
-      column-span: all;
-      -webkit-column-span: all;
+    .desktop-content .stagger > *:not(.fab) + *:not(.fab) { margin-top: 0; }
+    /* First card (hero/summary) spans the full width at the top */
+    .desktop-content .stagger > *:not(.fab):first-child {
+      column-span: all; -webkit-column-span: all;
       margin-bottom: 18px;
     }
-    /* FAB stays bottom-right but offset from the sidebar */
-    .finanzas-app.desktop-layout .fab { right: 40px; bottom: 40px; }
-    /* Bottom padding for nav clearance isn't needed on desktop */
+    /* FAB: keep it a perfect circle, fixed to viewport bottom-right */
+    .finanzas-app.desktop-layout .fab {
+      position: fixed !important;
+      right: 36px !important; bottom: 36px !important;
+      left: auto !important; top: auto !important;
+      width: 56px !important; height: 56px !important;
+      column-span: all;
+    }
     .desktop-content .pb-32 { padding-bottom: 0; }
   }
-  @media (min-width: 1500px) {
-    .desktop-content .stagger { columns: 3; }
+  @media (min-width: 1600px) {
+    .desktop-content[data-tab="home"] .stagger,
+    .desktop-content[data-tab="debts"] .stagger { columns: 3; }
+  }
+  /* Settings reads better as a single calm column than masonry cards */
+  @media (min-width: 1024px) {
+    .desktop-content[data-tab="settings"] .stagger,
+    .desktop-content[data-tab="projection"] .stagger {
+      columns: 1;
+      max-width: 680px;
+    }
+    .desktop-content[data-tab="settings"] .stagger > *:not(.fab):first-child,
+    .desktop-content[data-tab="projection"] .stagger > *:not(.fab):first-child {
+      column-span: none;
+    }
   }
   .display-font { font-family: 'Fraunces', Georgia, serif; font-optical-sizing: auto; letter-spacing: -0.025em; font-feature-settings: 'ss01', 'ss02'; }
   .mono-font { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum'; }

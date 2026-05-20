@@ -7376,7 +7376,7 @@ function FinanzasApp() {
                     </h1>
                   </div>
                 </div>
-                <div className="desktop-content">
+                <div className="desktop-content" data-tab={tab}>
                   {screens}
                 </div>
               </main>
