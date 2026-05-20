@@ -6621,6 +6621,90 @@ function AuthScreen({ onLoggedIn }) {
   );
 }
 
+// Detects whether the viewport is desktop-width (≥ 1024px). Updates on resize.
+function useIsDesktop(breakpoint = 1024) {
+  const query = `(min-width: ${breakpoint}px)`;
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(query).matches : false
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mql = window.matchMedia(query);
+    const onChange = (e) => setIsDesktop(e.matches);
+    setIsDesktop(mql.matches);
+    if (mql.addEventListener) mql.addEventListener('change', onChange);
+    else mql.addListener(onChange);
+    return () => {
+      if (mql.removeEventListener) mql.removeEventListener('change', onChange);
+      else mql.removeListener(onChange);
+    };
+  }, [query]);
+  return isDesktop;
+}
+
+// Desktop-only left sidebar navigation. Replaces the bottom nav on wide screens.
+function SideNav({ active, onChange, name, upcomingCount, onOpenNotifications, hideAmounts, onToggleHide }) {
+  const tabs = [
+    { id: 'home', label: 'Inicio', Icon: Home },
+    { id: 'debts', label: 'Deudas', Icon: CreditCard },
+    { id: 'movements', label: 'Movimientos', Icon: ArrowLeftRight },
+    { id: 'projection', label: 'Planes', Icon: TrendingUp },
+    { id: 'settings', label: 'Ajustes', Icon: SettingsIcon },
+  ];
+  return (
+    <aside className="desktop-sidenav">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px 22px' }}>
+        <div className="display-font" style={{
+          width: 38, height: 38, borderRadius: 11, flexShrink: 0,
+          background: 'linear-gradient(135deg, var(--primary), var(--primary-3))',
+          color: '#04130D', fontSize: 20, fontWeight: 700,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>$</div>
+        <div style={{ minWidth: 0 }}>
+          <p className="display-font" style={{ fontSize: 18, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1 }}>Finanzas</p>
+          <p className="tagline-script" style={{ fontSize: 15, marginTop: 1 }}>tu dinero, claro ✦</p>
+        </div>
+      </div>
+
+      <nav style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+        {tabs.map(({ id, label, Icon }) => {
+          const isActive = active === id;
+          return (
+            <button key={id} onClick={() => onChange(id)} className="sidenav-item" style={{
+              display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px',
+              borderRadius: 12, border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left',
+              background: isActive ? 'var(--primary-glow)' : 'transparent',
+              color: isActive ? 'var(--primary)' : 'var(--text-dim)',
+              fontSize: 14, fontWeight: isActive ? 600 : 500,
+              transition: 'background 0.18s ease, color 0.18s ease',
+            }}>
+              <Icon size={19} color={isActive ? 'var(--primary)' : 'var(--text-muted)'} strokeWidth={isActive ? 2.5 : 2} />
+              {label}
+            </button>
+          );
+        })}
+      </nav>
+
+      <div style={{ display: 'flex', gap: 8, padding: '14px 6px 4px', borderTop: '1px solid var(--border-soft)' }}>
+        <button onClick={onToggleHide} className="btn-ghost flex items-center justify-center" style={{ width: 40, height: 40, borderRadius: 11 }} title="Ocultar montos">
+          {hideAmounts ? <EyeOff size={17} /> : <Eye size={17} />}
+        </button>
+        <button onClick={onOpenNotifications} className="btn-ghost flex items-center justify-center relative" style={{ width: 40, height: 40, borderRadius: 11 }} title="Próximos pagos">
+          <Bell size={17} />
+          {upcomingCount > 0 && (
+            <span style={{
+              position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18, padding: '0 5px',
+              borderRadius: 999, fontSize: 10, fontWeight: 700, lineHeight: '18px',
+              background: 'var(--danger)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              border: '2px solid var(--surface)',
+            }}>{upcomingCount}</span>
+          )}
+        </button>
+      </div>
+    </aside>
+  );
+}
+
 function FinanzasApp() {
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState('home');
@@ -6629,6 +6713,7 @@ function FinanzasApp() {
   const [payDebtSheet, setPayDebtSheet] = useState(null);
   const [quickAdd, setQuickAdd] = useState(null);
   const [notifPermission, setNotifPermission] = useState('default');
+  const isDesktop = useIsDesktop();
   // Auth & cloud sync state (only meaningful if SUPABASE_CONFIGURED)
   const [session, setSession] = useState(null);
   const [authChecking, setAuthChecking] = useState(SUPABASE_CONFIGURED);
@@ -7258,21 +7343,61 @@ function FinanzasApp() {
   }
 
   return (
-    <div className="finanzas-app min-h-screen safe-top">
+    <div className={`finanzas-app min-h-screen safe-top${isDesktop ? ' desktop-layout' : ''}`}>
+      {(() => {
+        const screens = (
+          <>
+            {tab === 'home' && <Dashboard data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onNavigate={setTab} onPayDebt={(d) => setPayDebtSheet(d)} onAddTransaction={(t) => setQuickAdd(t)} onConfirm={handleConfirm} onConfirmDebt={handleConfirmDebtPayment} />}
+            {tab === 'debts' && <DebtsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveDebt} onDelete={handleDeleteDebt} onArchive={handleArchiveDebt} onPay={handlePayDebt} />}
+            {tab === 'movements' && <MovementsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveMovement} onDelete={handleDeleteMovement} onBulkAdd={handleBulkAddExpenses} onSetBudget={handleSetBudget} />}
+            {tab === 'projection' && <PlanesScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onUpdateSavings={handleUpdateSavings} onSavePlan={handleSavePlan} onDeletePlan={handleDeletePlan} />}
+            {tab === 'settings' && <SettingsScreen data={data} onUpdateUser={(u) => updateData(prev => ({ ...prev, user: { ...prev.user, ...u } }))} onUpdateSettings={(s) => updateData(prev => ({ ...prev, settings: { ...prev.settings, ...s } }))} onExport={handleExport} onExportCSV={handleExportCSV} onImport={handleImport} onExportCalendar={handleExportCalendar} onReset={handleReset} onRequestNotifications={handleRequestNotifs} notifPermission={notifPermission} session={session} syncStatus={syncStatus} onLogout={handleLogout} currency={data.user.currency} />}
+          </>
+        );
+        if (isDesktop) {
+          const tabTitles = { home: 'Inicio', debts: 'Deudas', movements: 'Movimientos', projection: 'Planes', settings: 'Ajustes' };
+          return (
+            <div className="desktop-shell">
+              <SideNav
+                active={tab} onChange={setTab} name={data.user.name}
+                upcomingCount={upcomingCount}
+                onOpenNotifications={() => setNotifSheetOpen(true)}
+                hideAmounts={data.settings.hideAmounts}
+                onToggleHide={() => updateData(prev => ({ ...prev, settings: { ...prev.settings, hideAmounts: !prev.settings.hideAmounts } }))}
+              />
+              <main className="desktop-main">
+                <div className="desktop-topbar">
+                  <div>
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>
+                      {new Date().toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' })}
+                    </p>
+                    <h1 className="display-font" style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-0.03em', lineHeight: 1.1, marginTop: 2 }}>
+                      {tab === 'home' ? <>Hola, <span style={{ color: 'var(--primary)', fontWeight: 600 }}>{data.user.name || 'amigo'}</span></> : tabTitles[tab]}
+                    </h1>
+                  </div>
+                </div>
+                <div className="desktop-content">
+                  {screens}
+                </div>
+              </main>
+            </div>
+          );
+        }
+        return (
+          <div className="relative z-10">
+            <Header
+              name={data.user.name}
+              hideAmounts={data.settings.hideAmounts}
+              onToggleHide={() => updateData(prev => ({ ...prev, settings: { ...prev.settings, hideAmounts: !prev.settings.hideAmounts } }))}
+              onOpenNotifications={() => setNotifSheetOpen(true)}
+              upcomingCount={upcomingCount}
+            />
+            {screens}
+            <BottomNav active={tab} onChange={setTab} />
+          </div>
+        );
+      })()}
       <div className="relative z-10">
-        <Header
-          name={data.user.name}
-          hideAmounts={data.settings.hideAmounts}
-          onToggleHide={() => updateData(prev => ({ ...prev, settings: { ...prev.settings, hideAmounts: !prev.settings.hideAmounts } }))}
-          onOpenNotifications={() => setNotifSheetOpen(true)}
-          upcomingCount={upcomingCount}
-        />
-        {tab === 'home' && <Dashboard data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onNavigate={setTab} onPayDebt={(d) => setPayDebtSheet(d)} onAddTransaction={(t) => setQuickAdd(t)} onConfirm={handleConfirm} onConfirmDebt={handleConfirmDebtPayment} />}
-        {tab === 'debts' && <DebtsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveDebt} onDelete={handleDeleteDebt} onArchive={handleArchiveDebt} onPay={handlePayDebt} />}
-        {tab === 'movements' && <MovementsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveMovement} onDelete={handleDeleteMovement} onBulkAdd={handleBulkAddExpenses} onSetBudget={handleSetBudget} />}
-        {tab === 'projection' && <PlanesScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onUpdateSavings={handleUpdateSavings} onSavePlan={handleSavePlan} onDeletePlan={handleDeletePlan} />}
-        {tab === 'settings' && <SettingsScreen data={data} onUpdateUser={(u) => updateData(prev => ({ ...prev, user: { ...prev.user, ...u } }))} onUpdateSettings={(s) => updateData(prev => ({ ...prev, settings: { ...prev.settings, ...s } }))} onExport={handleExport} onExportCSV={handleExportCSV} onImport={handleImport} onExportCalendar={handleExportCalendar} onReset={handleReset} onRequestNotifications={handleRequestNotifs} notifPermission={notifPermission} session={session} syncStatus={syncStatus} onLogout={handleLogout} currency={data.user.currency} />}
-        <BottomNav active={tab} onChange={setTab} />
         <Sheet open={notifSheetOpen} onClose={() => setNotifSheetOpen(false)} title="Próximos pagos" size="md">
           <NotificationsList data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onPay={(d) => setPayDebtSheet(d)} onClose={() => setNotifSheetOpen(false)} />
         </Sheet>

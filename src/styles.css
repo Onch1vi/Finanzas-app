@@ -172,6 +172,70 @@
     background: radial-gradient(ellipse 60% 50% at 50% 0%, var(--primary-glow), transparent 70%);
     pointer-events: none; z-index: 0; opacity: 0.7;
   }
+
+  /* ===================== DESKTOP LAYOUT (≥1024px) ===================== */
+  /* On wide screens the app drops the 480px phone column and uses a
+     left sidebar + wide content area that flows cards into 2 columns. */
+  .finanzas-app.desktop-layout { max-width: none; }
+  .finanzas-app.desktop-layout::before { max-width: 1100px; opacity: 0.5; }
+  .desktop-shell {
+    display: grid;
+    grid-template-columns: 256px 1fr;
+    min-height: 100dvh;
+    position: relative;
+    z-index: 10;
+  }
+  .desktop-sidenav {
+    position: sticky; top: 0; align-self: start;
+    height: 100dvh;
+    display: flex; flex-direction: column;
+    padding: 24px 16px;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .sidenav-item:hover { background: var(--surface-2) !important; color: var(--text) !important; }
+  .desktop-main {
+    min-width: 0;
+    padding: 0 0 40px;
+    max-width: 1180px;
+    width: 100%;
+    margin: 0 auto;
+  }
+  .desktop-topbar {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    padding: 28px 40px 16px;
+  }
+  .desktop-content { padding: 0 40px; }
+  /* Cards flow into a responsive masonry on the dashboard / movements */
+  .desktop-content .stagger {
+    column-gap: 20px;
+    padding-left: 0; padding-right: 0;
+  }
+  @media (min-width: 1024px) {
+    .desktop-content .stagger { columns: 2; column-gap: 20px; }
+    /* Each direct card avoids breaking across columns */
+    .desktop-content .stagger > * {
+      break-inside: avoid;
+      -webkit-column-break-inside: avoid;
+      margin-bottom: 16px;
+      width: 100%;
+    }
+    /* space-y utilities add margin-top that's redundant in column flow */
+    .desktop-content .stagger > * + * { margin-top: 0; }
+    /* The first card in each screen is a hero/summary — make it full width */
+    .desktop-content .stagger > *:first-child {
+      column-span: all;
+      -webkit-column-span: all;
+      margin-bottom: 18px;
+    }
+    /* FAB stays bottom-right but offset from the sidebar */
+    .finanzas-app.desktop-layout .fab { right: 40px; bottom: 40px; }
+    /* Bottom padding for nav clearance isn't needed on desktop */
+    .desktop-content .pb-32 { padding-bottom: 0; }
+  }
+  @media (min-width: 1500px) {
+    .desktop-content .stagger { columns: 3; }
+  }
   .display-font { font-family: 'Fraunces', Georgia, serif; font-optical-sizing: auto; letter-spacing: -0.025em; font-feature-settings: 'ss01', 'ss02'; }
   .mono-font { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum'; }
   .tabular { font-variant-numeric: tabular-nums; }
