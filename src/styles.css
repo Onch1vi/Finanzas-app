@@ -217,23 +217,35 @@
   }
   .desktop-content .stagger { padding-left: 0; padding-right: 0; }
   @media (min-width: 1024px) {
-    .desktop-content .stagger { columns: 2; column-gap: 20px; }
-    /* Card flow — but never touch the floating FAB (it's position:fixed) */
-    .desktop-content .stagger > *:not(.fab) {
-      break-inside: avoid;
-      -webkit-column-break-inside: avoid;
-      margin-bottom: 16px;
-      width: 100%;
-      display: block;
+    /* Row-based 2-column GRID (not masonry) so cards line up predictably.
+       align-items:start keeps each card at the top of its row. */
+    .desktop-content[data-tab="home"] .stagger,
+    .desktop-content[data-tab="debts"] .stagger {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      align-items: start;
     }
-    .desktop-content .stagger > *:not(.fab) + *:not(.fab) { margin-top: 0; }
-    /* First card (hero/summary) spans the full width at the top */
-    .desktop-content .stagger > *:not(.fab):first-child {
-      column-span: all; -webkit-column-span: all;
-      margin-bottom: 18px;
+    /* First card and anything marked .desk-full spans both columns */
+    .desktop-content[data-tab="home"] .stagger > *:not(.fab):first-child,
+    .desktop-content[data-tab="debts"] .stagger > *:not(.fab):first-child,
+    .desktop-content .stagger > .desk-full {
+      grid-column: 1 / -1;
     }
-    /* FAB: keep it a perfect circle, fixed to viewport bottom-right.
-       max-width guards against any inherited stretch; aspect-ratio locks the circle. */
+    /* Single-column screens: clean centered column */
+    .desktop-content[data-tab="settings"] .stagger,
+    .desktop-content[data-tab="projection"] .stagger,
+    .desktop-content[data-tab="movements"] .stagger {
+      max-width: 720px;
+    }
+    /* A container of cards that should itself become a 2-up grid on desktop */
+    .desk-cardgrid {
+      display: grid !important;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px !important;
+      align-items: start;
+    }
+    /* FAB: perfect circle, fixed bottom-right, immune to layout rules */
     .finanzas-app.desktop-layout .fab,
     .desktop-content .fab {
       position: fixed !important;
@@ -247,20 +259,9 @@
     .desktop-content .pb-32 { padding-bottom: 0; }
   }
   @media (min-width: 1600px) {
-    .desktop-content[data-tab="home"] .stagger,
-    .desktop-content[data-tab="debts"] .stagger { columns: 3; }
-  }
-  /* Settings reads better as a single calm column than masonry cards */
-  @media (min-width: 1024px) {
-    .desktop-content[data-tab="settings"] .stagger,
-    .desktop-content[data-tab="projection"] .stagger {
-      columns: 1;
-      max-width: 680px;
-    }
-    .desktop-content[data-tab="settings"] .stagger > *:not(.fab):first-child,
-    .desktop-content[data-tab="projection"] .stagger > *:not(.fab):first-child {
-      column-span: none;
-    }
+    /* Card containers (debt list, etc.) can go 3-up on very wide screens.
+       The main 2-column grid stays at 2 so cards keep a comfortable width. */
+    .desk-cardgrid { grid-template-columns: 1fr 1fr 1fr; }
   }
   .display-font { font-family: 'Fraunces', Georgia, serif; font-optical-sizing: auto; letter-spacing: -0.025em; font-feature-settings: 'ss01', 'ss02'; }
   .mono-font { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum'; }

@@ -3183,7 +3183,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
       </div>
 
       {upcomingPayments.length > 0 && (
-        <div className="animate-slideup">
+        <div className="animate-slideup desk-full">
           <div className="flex items-center justify-between mb-3 px-1">
             <div>
               <h3 className="display-font" style={{ fontSize: 19, fontWeight: 500, letterSpacing: '-0.02em' }}>Próximos pagos</h3>
@@ -3356,7 +3356,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
       )}
 
       {HAS_CHARTS && chartData.some(m => m.ingresos > 0 || m.egresos > 0) && (
-        <div className="animate-slideup card" style={{ padding: 18 }}>
+        <div className="animate-slideup card desk-full" style={{ padding: 18 }}>
           <div className="flex items-center justify-between mb-4">
             <h3 className="display-font" style={{ fontSize: 16, fontWeight: 500, letterSpacing: '-0.02em' }}>Últimos 6 meses</h3>
             <div style={{ display: 'flex', gap: 12, fontSize: 10 }}>
@@ -3375,7 +3375,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
         </div>
       )}
 
-      <div className="animate-slideup grid grid-cols-3 gap-2">
+      <div className="animate-slideup grid grid-cols-3 gap-2 desk-full">
         <button onClick={() => onAddTransaction('income')} className="flex flex-col items-center gap-2 p-3.5 rounded-2xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
           <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'var(--primary-glow)' }}><ArrowUp size={16} color="var(--primary)" /></div>
           <span className="text-xs font-medium">Ingreso</span>
@@ -3391,7 +3391,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
       </div>
 
       {!hasData && (
-        <div className="animate-slideup rounded-2xl p-6 text-center" style={{ background: 'var(--surface)', border: '1px dashed var(--border)' }}>
+        <div className="animate-slideup rounded-2xl p-6 text-center desk-full" style={{ background: 'var(--surface)', border: '1px dashed var(--border)' }}>
           <div className="flex justify-center mb-3"><Sparkles size={28} color="var(--primary)" /></div>
           <h3 className="display-font text-lg font-semibold mb-1">Comienza a registrar</h3>
           <p className="text-sm mb-4" style={{ color: 'var(--text-dim)' }}>Añade tus deudas, ingresos y egresos para ver tu proyección financiera.</p>
@@ -3456,7 +3456,7 @@ function DebtsScreen({ data, currency, hideAmounts, onSave, onDelete, onPay, onA
         </div>
       </div>
 
-      <div className="animate-slideup" style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 14, background: 'var(--surface)', border: '1px solid var(--border)' }}>
+      <div className="animate-slideup desk-full" style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 14, background: 'var(--surface)', border: '1px solid var(--border)' }}>
         {[{id:'active',label:'Activas'},{id:'paid',label:'Pagadas'},{id:'all',label:'Todas'}].map(t => {
           const sel = filter === t.id;
           return (
@@ -3473,13 +3473,13 @@ function DebtsScreen({ data, currency, hideAmounts, onSave, onDelete, onPay, onA
       </div>
 
       {filtered.length === 0 ? (
-        <div className="animate-slideup" style={{ padding: 28, textAlign: 'center', background: 'var(--surface)', border: '1px dashed var(--border)', borderRadius: 16 }}>
+        <div className="animate-slideup desk-full" style={{ padding: 28, textAlign: 'center', background: 'var(--surface)', border: '1px dashed var(--border)', borderRadius: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}><CreditCard size={28} color="var(--text-muted)" strokeWidth={1.8} /></div>
           <p className="display-font" style={{ fontSize: 18, fontWeight: 500, marginBottom: 4, letterSpacing: '-0.02em' }}>Sin deudas</p>
           <p style={{ fontSize: 13, color: 'var(--text-dim)' }}>{filter === 'active' ? '¡Vas bien! Aún sin deudas activas.' : 'Aquí verás tus deudas.'}</p>
         </div>
       ) : (
-        <div className="animate-slideup" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{filtered.map(d => <DebtCard key={d.id} debt={d} currency={currency} hideAmounts={hideAmounts} onTap={() => setDetailDebt(d)} />)}</div>
+        <div className="animate-slideup desk-full desk-cardgrid" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{filtered.map(d => <DebtCard key={d.id} debt={d} currency={currency} hideAmounts={hideAmounts} onTap={() => setDetailDebt(d)} />)}</div>
       )}
 
       <button onClick={() => setCreating(true)} className="fab" aria-label="Añadir deuda"><Plus size={24} strokeWidth={2.5} /></button>
