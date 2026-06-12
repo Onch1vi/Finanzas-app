@@ -541,3 +541,158 @@
   .duration-500 { transition-duration: 500ms; }
   .animate-pulse { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+/* ============================================================================
+   IMMERSIVE LAYER — aurora background, 3D tilt, count-ups, draw-in charts,
+   tab transitions, ambient mood. Heavy effects are hover-only / GPU-friendly
+   and fully disabled under prefers-reduced-motion.
+   ========================================================================== */
+
+/* --- Aurora: two slow-drifting color blobs behind everything --- */
+@keyframes aurora-a {
+  0%   { transform: translate(-12%, -8%) scale(1) rotate(0deg); }
+  33%  { transform: translate(10%, 6%) scale(1.25) rotate(40deg); }
+  66%  { transform: translate(-6%, 14%) scale(0.9) rotate(80deg); }
+  100% { transform: translate(-12%, -8%) scale(1) rotate(0deg); }
+}
+@keyframes aurora-b {
+  0%   { transform: translate(15%, 10%) scale(1.1); }
+  50%  { transform: translate(-10%, -12%) scale(0.85); }
+  100% { transform: translate(15%, 10%) scale(1.1); }
+}
+body::before, body::after {
+  content: ''; position: fixed; z-index: 0; pointer-events: none;
+  width: 60vmax; height: 60vmax; border-radius: 50%;
+  filter: blur(90px); will-change: transform;
+}
+body::before {
+  top: -22vmax; left: -14vmax;
+  background: radial-gradient(circle, var(--primary-glow) 0%, transparent 65%);
+  opacity: 0.9; animation: aurora-a 42s ease-in-out infinite;
+}
+body::after {
+  bottom: -25vmax; right: -16vmax;
+  background: radial-gradient(circle, rgba(167,139,250,0.12) 0%, transparent 65%);
+  animation: aurora-b 36s ease-in-out infinite;
+}
+/* Ambient mood: month flow negative → warm red aurora; positive → green.
+   :has() is supported everywhere we care about; older browsers just keep
+   the default green aurora. */
+body:has(.finanzas-app[data-mood="negative"])::before {
+  background: radial-gradient(circle, rgba(248,113,113,0.13) 0%, transparent 65%);
+}
+body:has(.finanzas-app[data-mood="negative"])::after {
+  background: radial-gradient(circle, rgba(251,146,60,0.10) 0%, transparent 65%);
+}
+/* Film-grain noise overlay for premium depth */
+.finanzas-app::after {
+  content: ''; position: fixed; inset: 0; z-index: 1; pointer-events: none;
+  opacity: 0.022; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+[data-theme="studio"] .finanzas-app::after { opacity: 0.035; mix-blend-mode: multiply; }
+
+/* --- 3D tilt cards (desktop pointer only) --- */
+@media (hover: hover) and (pointer: fine) {
+  .card-hero, .card-elevated {
+    transform: perspective(1000px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateZ(0);
+    transition: transform 0.22s var(--ease-out), box-shadow 0.3s ease;
+    will-change: transform;
+  }
+  /* the entry animation locks `transform`; release it once the user interacts */
+  .is-tilting { animation: none !important; }
+  .is-tilting.card-hero, .is-tilting.card-elevated {
+    box-shadow: 0 30px 60px -18px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04);
+  }
+  /* moving glare highlight that follows the cursor */
+  .card-hero::after, .card-elevated::after {
+    content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: radial-gradient(480px circle at var(--mx, 50%) var(--my, 50%), rgba(255,255,255,0.09), transparent 60%);
+    opacity: 0; transition: opacity 0.3s ease; z-index: 2;
+  }
+  .is-tilting.card-hero::after, .is-tilting.card-elevated::after { opacity: 1; }
+  /* interactive list cards get a soft lift */
+  .card-press:hover { transform: translateY(-2px); box-shadow: 0 14px 28px -12px rgba(0,0,0,0.45); border-color: var(--border-strong); }
+  [data-theme="studio"] .is-tilting.card-hero, [data-theme="studio"] .is-tilting.card-elevated {
+    box-shadow: 0 26px 50px -16px rgba(60,40,20,0.25);
+  }
+}
+
+/* --- Tab switch transition --- */
+@keyframes tab-in {
+  from { opacity: 0; transform: translateY(16px) scale(0.988); filter: blur(3px); }
+  to   { opacity: 1; transform: none; filter: blur(0); }
+}
+.animate-tab { animation: tab-in 0.38s var(--ease-out) both; }
+
+/* --- SVG line chart draw-in --- */
+@keyframes draw-line { to { stroke-dashoffset: 0; } }
+.draw-line {
+  stroke-dasharray: 1; stroke-dashoffset: 1;
+  animation: draw-line 1.4s var(--ease-out) 0.15s forwards;
+}
+@keyframes area-reveal { from { opacity: 0; } to { opacity: 1; } }
+.area-reveal { opacity: 0; animation: area-reveal 0.8s ease 0.9s forwards; }
+@keyframes point-pop {
+  0% { r: 0; } 60% { r: 4.5; } 100% { r: 3; }
+}
+.point-pop { animation: point-pop 0.5s var(--ease-spring) 1.45s both; }
+
+/* --- Progress bars: animated fill entry (the light shimmer already exists via ::after) --- */
+@keyframes fill-in { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.progress-fill { transform-origin: left center; animation: fill-in 0.9s var(--ease-out) 0.2s both; }
+
+/* --- Nav micro-interactions --- */
+@keyframes icon-bounce {
+  0% { transform: scale(1); } 40% { transform: scale(1.28) translateY(-2px); } 100% { transform: scale(1.05) translateY(-1px); }
+}
+.bottom-nav button:active > div { animation: icon-bounce 0.35s var(--ease-spring); }
+.sidenav-item { position: relative; overflow: hidden; }
+.sidenav-item::before {
+  content: ''; position: absolute; left: 0; top: 20%; bottom: 20%; width: 3px;
+  border-radius: 999px; background: var(--primary);
+  transform: scaleY(0); transition: transform 0.25s var(--ease-spring);
+}
+.sidenav-item.is-active::before { transform: scaleY(1); }
+.sidenav-item:hover { transform: translateX(3px); }
+.sidenav-item { transition: background 0.18s ease, color 0.18s ease, transform 0.2s var(--ease-spring); }
+
+/* --- FAB: breathing glow ring + hover spin --- */
+@keyframes fab-ring {
+  0% { box-shadow: 0 12px 32px -8px var(--primary-glow), 0 4px 12px rgba(0,0,0,0.4), 0 0 0 0 var(--primary-glow); }
+  60% { box-shadow: 0 12px 32px -8px var(--primary-glow), 0 4px 12px rgba(0,0,0,0.4), 0 0 0 14px transparent; }
+  100% { box-shadow: 0 12px 32px -8px var(--primary-glow), 0 4px 12px rgba(0,0,0,0.4), 0 0 0 0 transparent; }
+}
+.fab { animation: fab-ring 2.8s ease-out infinite; }
+@media (hover: hover) { .fab:hover { transform: scale(1.08) rotate(90deg); } }
+
+/* --- Big number entrance --- */
+@keyframes money-pop {
+  0% { opacity: 0; transform: translateY(10px) scale(0.96); letter-spacing: 0.02em; }
+  100% { opacity: 1; transform: none; letter-spacing: -0.035em; }
+}
+.money-pop { animation: money-pop 0.55s var(--ease-out) both; }
+
+/* --- Skeleton shimmer (loading) --- */
+@keyframes skeleton { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+.skeleton {
+  background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%);
+  background-size: 200% 100%; animation: skeleton 1.4s ease infinite; border-radius: 12px;
+}
+
+/* --- Accessibility: kill all motion if the user asks --- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001s !important;
+  }
+  body::before, body::after { animation: none !important; }
+}
+
+/* --- Branded loader: coin flip --- */
+@keyframes coin-spin {
+  0% { transform: perspective(400px) rotateY(0deg); }
+  100% { transform: perspective(400px) rotateY(360deg); }
+}
+.coin-spin { animation: coin-spin 1.6s cubic-bezier(0.45, 0, 0.25, 1) infinite; }

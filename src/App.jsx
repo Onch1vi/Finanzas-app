@@ -209,6 +209,92 @@ const CURRENCIES = {
   CLP: { code: 'CLP', symbol: '$', locale: 'es-CL', decimals: 0 },
 };
 
+// ============================================================================
+//  VISUAL FX — confetti bursts + animated number count-ups.
+//  Both honor prefers-reduced-motion (no canvas, no RAF loops).
+// ============================================================================
+function fireConfetti({ x, y, count = 70, spread = 7 } = {}) {
+  if (typeof window === 'undefined') return;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  canvas.style.cssText = 'position:fixed;inset:0;z-index:9999;pointer-events:none;';
+  document.body.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  const colors = ['#34D399', '#A78BFA', '#FBBF24', '#F472B6', '#38BDF8', '#F4C77B'];
+  const cx = x !== null && x !== undefined ? x : window.innerWidth / 2;
+  const cy = y !== null && y !== undefined ? y : window.innerHeight * 0.32;
+  const parts = [];
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 3 + Math.random() * spread;
+    parts.push({
+      x: cx, y: cy,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 4.5,
+      size: 4 + Math.random() * 5,
+      rot: Math.random() * Math.PI,
+      vrot: (Math.random() - 0.5) * 0.35,
+      color: colors[i % colors.length],
+      life: 1,
+      shape: Math.random() > 0.5 ? 'rect' : 'circle',
+    });
+  }
+  let frames = 0;
+  const tick = () => {
+    frames++;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    let alive = false;
+    for (const p of parts) {
+      p.vy += 0.22;          // gravity
+      p.vx *= 0.985;         // drag
+      p.x += p.vx; p.y += p.vy; p.rot += p.vrot;
+      p.life -= 0.011;
+      if (p.life <= 0) continue;
+      alive = true;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      if (p.shape === 'rect') ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.6);
+      else { ctx.beginPath(); ctx.arc(0, 0, p.size / 2.4, 0, Math.PI * 2); ctx.fill(); }
+      ctx.restore();
+    }
+    if (alive && frames < 260) requestAnimationFrame(tick);
+    else canvas.remove();
+  };
+  requestAnimationFrame(tick);
+}
+
+// Animates a number from its previous value to the new one (ease-out cubic).
+// `format` receives the interpolated number and returns the display string.
+function CountUp({ value, format, duration = 850 }) {
+  const [display, setDisplay] = useState(value);
+  const prevRef = useRef(value);
+  useEffect(() => {
+    const from = prevRef.current;
+    const to = value;
+    prevRef.current = to;
+    if (from === to) { setDisplay(to); return; }
+    if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setDisplay(to); return;
+    }
+    const start = performance.now();
+    let raf;
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value, duration]);
+  return <>{format(Math.round(display))}</>;
+}
+
 const formatMoney = (amount, currency = 'COP', hidden = false) => {
   if (hidden) return '••••••';
   const c = CURRENCIES[currency] || CURRENCIES.COP;
@@ -2278,7 +2364,7 @@ function RealBalanceCard({ sim, savings, currency, hideAmounts, onNavigate, onSe
       ) : (
         <>
           <h2 className="display-font tabular" style={{ fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1.05, color: balanceToday >= 0 ? 'var(--text)' : 'var(--danger)' }}>
-            {fmt(balanceToday)}
+            <CountUp value={balanceToday} format={fmt} />
           </h2>
           <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>
             Base {fmt(startingCash)} {sim.confirmedCount > 0 ? `· ${sim.confirmedCount} movimiento${sim.confirmedCount !== 1 ? 's' : ''} confirmado${sim.confirmedCount !== 1 ? 's' : ''}` : ''}
@@ -2594,7 +2680,7 @@ function NetWorthCard({ data, currency, hideAmounts }) {
         </span>
       </div>
       <h2 className="display-font tabular" style={{ fontSize: 32, fontWeight: 500, letterSpacing: '-0.03em', color: last >= 0 ? 'var(--text)' : 'var(--danger)' }}>
-        {formatMoney(last, currency, hideAmounts)}
+        <CountUp value={last} format={(v) => formatMoney(v, currency, hideAmounts)} />
       </h2>
       <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
         Efectivo {formatCompact(current.cash, currency, hideAmounts)} + ahorros {formatCompact(current.savings, currency, hideAmounts)} − deudas {formatCompact(current.debts, currency, hideAmounts)}
@@ -2615,11 +2701,12 @@ function NetWorthCard({ data, currency, hideAmounts }) {
                   x2={chartWidth - chartPad} y2={chartPad + (1 - (0 - yMin) / range) * (chartHeight - chartPad * 2)}
                   stroke="var(--border-strong)" strokeWidth="0.5" strokeDasharray="2 3" />
           )}
-          <path d={pathArea} fill="url(#nwGradient)" />
-          <path d={pathLine} fill="none" stroke={trendColor} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-          {points.map((p, i) => (
-            <circle key={i} cx={p.x} cy={p.y} r={i === points.length - 1 ? 3 : 0} fill={trendColor} />
-          ))}
+          <path className="area-reveal" d={pathArea} fill="url(#nwGradient)" />
+          {/* pathLength=1 normalizes the dash so the draw-in animation works for any path length */}
+          <path className="draw-line" pathLength="1" d={pathLine} fill="none" stroke={trendColor} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          {points.length > 0 && (
+            <circle className="point-pop" cx={points[points.length - 1].x} cy={points[points.length - 1].y} r={3} fill={trendColor} />
+          )}
         </svg>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 9.5, color: 'var(--text-muted)' }}>
           <span>{history[0].monthKey}</span>
@@ -3071,7 +3158,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
               color: monthRealStats.realFlow >= 0 ? 'var(--primary)' : 'var(--danger)',
               marginBottom: 6, fontVariantNumeric: 'tabular-nums',
             }}>
-              {monthRealStats.realFlow >= 0 ? '+' : ''}{formatMoney(monthRealStats.realFlow, currency, hideAmounts)}
+              <CountUp value={monthRealStats.realFlow} format={(v) => (v >= 0 ? '+' : '') + formatMoney(v, currency, hideAmounts)} />
             </h2>
             <p style={{ fontSize: 12, color: 'var(--text-dim)', letterSpacing: '-0.005em', lineHeight: 1.4 }}>
               Lo que realmente entró menos lo que ya pagaste · proyectado al cierre <span className="tabular" style={{ color: 'var(--text)', fontWeight: 600 }}>{monthRealStats.totalProjected >= 0 ? '+' : ''}{formatCompact(monthRealStats.totalProjected, currency, hideAmounts)}</span>
@@ -3112,7 +3199,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
               color: thisMonthFlow >= 0 ? 'var(--primary)' : 'var(--danger)',
               marginBottom: 6, fontVariantNumeric: 'tabular-nums',
             }}>
-              {thisMonthFlow >= 0 ? '+' : ''}{formatMoney(thisMonthFlow, currency, hideAmounts)}
+              <CountUp value={thisMonthFlow} format={(v) => (v >= 0 ? '+' : '') + formatMoney(v, currency, hideAmounts)} />
             </h2>
             <p style={{ fontSize: 13, color: 'var(--text-dim)', letterSpacing: '-0.005em' }}>
               Estimación si pagas todo lo del mes. Confirma cada pago para ver el real.
@@ -3485,7 +3572,7 @@ function DebtsScreen({ data, currency, hideAmounts, onSave, onDelete, onPay, onA
           fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1,
           color: 'var(--danger)', marginBottom: 14,
         }}>
-          {formatMoney(totalActive, currency, hideAmounts)}
+          <CountUp value={totalActive} format={(v) => formatMoney(v, currency, hideAmounts)} />
         </h2>
         <div style={{ display: 'flex', gap: 24, fontSize: 11.5 }}>
           <div>
@@ -6713,7 +6800,7 @@ function SideNav({ active, onChange, name, upcomingCount, onOpenNotifications, h
         {tabs.map(({ id, label, Icon }) => {
           const isActive = active === id;
           return (
-            <button key={id} onClick={() => onChange(id)} className="sidenav-item" style={{
+            <button key={id} onClick={() => onChange(id)} className={`sidenav-item${isActive ? ' is-active' : ''}`} style={{
               display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px',
               borderRadius: 12, border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left',
               background: isActive ? 'var(--primary-glow)' : 'transparent',
@@ -6757,6 +6844,60 @@ function FinanzasApp() {
   const [quickAdd, setQuickAdd] = useState(null);
   const [notifPermission, setNotifPermission] = useState('default');
   const isDesktop = useIsDesktop();
+
+  // 3D tilt: one delegated listener animates any hovered hero/elevated card.
+  // Pointer-fine devices only; mobile stays untouched.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+    const SEL = '.card-hero, .card-elevated';
+    const MAX_DEG = 5;
+    let current = null;
+    let raf = null;
+    let lastEvent = null;
+    const reset = (el) => {
+      el.classList.remove('is-tilting');
+      el.style.setProperty('--rx', '0deg');
+      el.style.setProperty('--ry', '0deg');
+    };
+    const apply = () => {
+      raf = null;
+      if (!current || !lastEvent) return;
+      const r = current.getBoundingClientRect();
+      const px = (lastEvent.clientX - r.left) / r.width;
+      const py = (lastEvent.clientY - r.top) / r.height;
+      current.style.setProperty('--rx', ((0.5 - py) * MAX_DEG).toFixed(2) + 'deg');
+      current.style.setProperty('--ry', ((px - 0.5) * MAX_DEG).toFixed(2) + 'deg');
+      current.style.setProperty('--mx', (px * 100).toFixed(1) + '%');
+      current.style.setProperty('--my', (py * 100).toFixed(1) + '%');
+    };
+    const onOver = (e) => {
+      const card = e.target.closest(SEL);
+      if (card && card !== current) {
+        if (current) reset(current);
+        current = card;
+        card.classList.add('is-tilting');
+      }
+    };
+    const onOut = (e) => {
+      if (current && !current.contains(e.relatedTarget)) { reset(current); current = null; }
+    };
+    const onMove = (e) => {
+      if (!current) return;
+      lastEvent = e;
+      if (!raf) raf = requestAnimationFrame(apply);
+    };
+    document.addEventListener('mouseover', onOver);
+    document.addEventListener('mouseout', onOut);
+    document.addEventListener('mousemove', onMove, { passive: true });
+    return () => {
+      document.removeEventListener('mouseover', onOver);
+      document.removeEventListener('mouseout', onOut);
+      document.removeEventListener('mousemove', onMove);
+      if (raf) cancelAnimationFrame(raf);
+      if (current) reset(current);
+    };
+  }, []);
   // Auth & cloud sync state (only meaningful if SUPABASE_CONFIGURED)
   const [session, setSession] = useState(null);
   const [authChecking, setAuthChecking] = useState(SUPABASE_CONFIGURED);
@@ -7121,7 +7262,10 @@ function FinanzasApp() {
       return { ...prev, confirmations: { ...prev.confirmations, [monthKey]: next } };
     });
     const isIncome = key.startsWith('inc-');
-    if (wasMarked) setToast(isIncome ? 'Marcado como recibido' : 'Marcado como pagado');
+    if (wasMarked) {
+      setToast(isIncome ? 'Marcado como recibido' : 'Marcado como pagado');
+      fireConfetti({ count: isIncome ? 80 : 50 });
+    }
     else setToast('Marca quitada');
   };
   // Special handler: confirm a debt payment (also actually deducts from debt)
@@ -7170,19 +7314,24 @@ function FinanzasApp() {
       };
     });
     setToast(confirmed ? 'Pago confirmado' : 'Pago descartado');
+    if (confirmed) fireConfetti({ count: 55 });
   };
   const handlePayDebt = (id, amount, note) => {
+    let debtCompleted = false;
     updateData(prev => {
       const debt = prev.debts.find(d => d.id === id);
       if (!debt) return prev;
       const newPaid = (debt.paidAmount || 0) + amount;
+      debtCompleted = newPaid >= debt.totalAmount;
       return {
         ...prev,
         debts: prev.debts.map(d => d.id === id ? { ...d, paidAmount: newPaid } : d),
         transactions: [...prev.transactions, { id: uid(), type: 'debt-payment', amount, date: new Date().toISOString(), debtId: id, notes: note }],
       };
     });
-    setToast(`Pago de ${formatMoney(amount, data.user.currency)} registrado`);
+    setToast(debtCompleted ? '🎉 ¡Deuda saldada por completo!' : `Pago de ${formatMoney(amount, data.user.currency)} registrado`);
+    // Paying off a debt entirely earns the big celebration
+    fireConfetti(debtCompleted ? { count: 160, spread: 10 } : { count: 60 });
   };
   const handleSaveMovement = (type, item, opts = {}) => {
     updateData(prev => {
@@ -7356,37 +7505,44 @@ function FinanzasApp() {
     }).length;
   }, [data.debts]);
 
-  // While checking auth, show loader
-  if (authChecking) {
-    return (
-      <div className="finanzas-app min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-12 h-12 mx-auto mb-3 rounded-full animate-pulse" style={{ background: 'var(--primary-glow)' }} />
-          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>Conectando...</p>
-        </div>
+  // Ambient mood: tints the aurora background by this month's projected flow.
+  // Positive month → calm green; negative month → warm warning hues.
+  const mood = useMemo(() => {
+    try {
+      const proj = buildMonthlyProjection(data, 1);
+      if (!proj[0]) return 'neutral';
+      return proj[0].cashFlow >= 0 ? 'positive' : 'negative';
+    } catch (e) { return 'neutral'; }
+  }, [data]);
+
+  // Branded loader: 3D coin flip with the $ logo
+  const Loader = ({ label }) => (
+    <div className="finanzas-app min-h-screen flex items-center justify-center">
+      <div className="text-center">
+        <div className="coin-spin display-font" style={{
+          width: 56, height: 56, margin: '0 auto 16px', borderRadius: 16,
+          background: 'linear-gradient(135deg, var(--primary), var(--primary-3))',
+          color: '#04130D', fontSize: 28, fontWeight: 700,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 10px 30px -8px var(--primary-glow)',
+        }}>$</div>
+        <p className="text-sm" style={{ color: 'var(--text-dim)' }}>{label}</p>
       </div>
-    );
-  }
+    </div>
+  );
+  // While checking auth, show loader
+  if (authChecking) return <Loader label="Conectando..." />;
   // If Supabase is configured but the user is not logged in, show the auth screen
   if (SUPABASE_CONFIGURED && !session) {
     return <AuthScreen onLoggedIn={() => { /* session listener will pick it up */ }} />;
   }
-  if (!loaded) {
-    return (
-      <div className="finanzas-app min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-12 h-12 mx-auto mb-3 rounded-full animate-pulse" style={{ background: 'var(--primary-glow)' }} />
-          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>Cargando...</p>
-        </div>
-      </div>
-    );
-  }
+  if (!loaded) return <Loader label="Cargando..." />;
   if (!data.user.name) {
     return <Onboarding onComplete={(u) => updateData(prev => ({ ...prev, user: { ...prev.user, ...u } }))} />;
   }
 
   return (
-    <div className={`finanzas-app min-h-screen safe-top${isDesktop ? ' desktop-layout' : ''}`}>
+    <div className={`finanzas-app min-h-screen safe-top${isDesktop ? ' desktop-layout' : ''}`} data-mood={mood}>
       {(() => {
         const screens = (
           <>
@@ -7420,7 +7576,8 @@ function FinanzasApp() {
                   </div>
                 </div>
                 <div className="desktop-content" data-tab={tab}>
-                  {screens}
+                  {/* key={tab} re-mounts the wrapper so the enter animation plays on every switch */}
+                  <div key={tab} className="animate-tab">{screens}</div>
                 </div>
               </main>
             </div>
@@ -7435,7 +7592,7 @@ function FinanzasApp() {
               onOpenNotifications={() => setNotifSheetOpen(true)}
               upcomingCount={upcomingCount}
             />
-            {screens}
+            <div key={tab} className="animate-tab">{screens}</div>
             <BottomNav active={tab} onChange={setTab} />
           </div>
         );
