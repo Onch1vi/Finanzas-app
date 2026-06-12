@@ -5,7 +5,7 @@
 // - CDN libs (React, Babel, Supabase): cache-first (immutable URLs).
 // - Supabase API calls: network-only — auth/data must always be fresh.
 
-const CACHE_VERSION = 'v8';
+const CACHE_VERSION = 'v9';
 const APP_CACHE = `finanzas-app-${CACHE_VERSION}`;
 const CDN_CACHE = `finanzas-cdn-${CACHE_VERSION}`;
 

@@ -2207,28 +2207,51 @@ function ConfirmTip() {
 // === Real-balance "today" card ===
 // Shows: starting cash + sum of confirmed movements = real balance today.
 // Plus a 30-day forecast highlighting when you'd go negative and when you'd recover.
-function RealBalanceCard({ sim, savings, currency, hideAmounts, onNavigate }) {
+function RealBalanceCard({ sim, savings, currency, hideAmounts, onNavigate, onSetBalance }) {
   const fmt = (n) => formatMoney(n, currency, hideAmounts);
   const startingCash = sim.startingCash || 0;
   const balanceToday = sim.realBalanceToday || 0;
   const eom = sim.endOfMonthBalance || 0;
   const goesNegative = !!sim.firstNegativeDate;
   const recovers = !!sim.recoveryDate;
-  const negativeColor = goesNegative ? (eom < 0 ? 'var(--danger)' : 'var(--warning)') : 'var(--primary)';
+  // Inline editor state when user clicks "Define ahora"
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(0);
+  const startEdit = () => { setDraft(startingCash); setEditing(true); };
+  const saveEdit = () => { if (onSetBalance) onSetBalance(draft); setEditing(false); };
 
-  // Empty state: no balance set
-  if (startingCash === 0 && sim.events.length === 0) {
+  // No-balance state: show a prominent inline editor — without this number the
+  // whole "real money today" computation is meaningless.
+  if (startingCash === 0) {
     return (
-      <button onClick={() => onNavigate('projection')} className="animate-slideup card card-press w-full text-left" style={{ padding: 18, display: 'flex', alignItems: 'center', gap: 12, border: '1px dashed var(--border-strong)' }}>
-        <div style={{ width: 40, height: 40, borderRadius: 12, background: 'var(--surface-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <Wallet size={18} color="var(--primary)" strokeWidth={2.2} />
+      <div className="animate-slideup card-elevated" style={{ padding: 18, border: '2px dashed var(--warning)', background: 'rgba(251,191,36,0.06)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 11, background: 'var(--warning-glow)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Wallet size={17} color="var(--warning)" strokeWidth={2.3} />
+          </div>
+          <div className="flex-1">
+            <p style={{ fontSize: 13.5, fontWeight: 700 }}>Falta tu plata de hoy</p>
+            <p style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 2, lineHeight: 1.4 }}>Sin este número, todos los balances aparecen en $0. Métele lo que tienes en cuenta + efectivo ahora mismo:</p>
+          </div>
         </div>
-        <div className="flex-1">
-          <p style={{ fontSize: 13.5, fontWeight: 600 }}>Configura tu balance hoy</p>
-          <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>Para ver tu plata real día a día, indica cuánto tienes ahora.</p>
-        </div>
-        <ChevronRight size={16} color="var(--text-muted)" />
-      </button>
+        {editing ? (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ flex: 1 }}>
+              <MoneyInput value={draft} onChange={setDraft} currency={currency} />
+            </div>
+            <button onClick={saveEdit} className="btn-primary" style={{ borderRadius: 12, padding: '0 16px', fontSize: 13, fontWeight: 600 }}>Guardar</button>
+          </div>
+        ) : (
+          <button onClick={startEdit} className="btn-primary w-full" style={{ borderRadius: 12, padding: '12px 0', fontSize: 14, fontWeight: 600 }}>
+            Definir mi plata ahora
+          </button>
+        )}
+        {sim.events.length > 0 && (
+          <p style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 10, lineHeight: 1.4 }}>
+            Mientras tanto, este mes se proyectan {sim.events.length} movimientos pero no se sabe sobre qué base aplicarlos.
+          </p>
+        )}
+      </div>
     );
   }
 
@@ -2239,14 +2262,29 @@ function RealBalanceCard({ sim, savings, currency, hideAmounts, onNavigate }) {
           <Wallet size={14} color="var(--primary)" strokeWidth={2.4} />
           <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Tu plata hoy</span>
         </div>
-        <button onClick={() => onNavigate('projection')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>Editar</button>
+        <button onClick={startEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: 'var(--primary)', fontWeight: 600 }}>Editar</button>
       </div>
-      <h2 className="display-font tabular" style={{ fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1.05, color: balanceToday >= 0 ? 'var(--text)' : 'var(--danger)' }}>
-        {fmt(balanceToday)}
-      </h2>
-      <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>
-        Base {fmt(startingCash)} {sim.confirmedCount > 0 ? `· ${sim.confirmedCount} movimiento${sim.confirmedCount !== 1 ? 's' : ''} confirmado${sim.confirmedCount !== 1 ? 's' : ''}` : ''}
-      </p>
+      {editing ? (
+        <div style={{ marginBottom: 10 }}>
+          <p style={{ fontSize: 10.5, color: 'var(--text-muted)', marginBottom: 6 }}>Cuánto tienes ahora (cuenta + efectivo)</p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ flex: 1 }}>
+              <MoneyInput value={draft} onChange={setDraft} currency={currency} />
+            </div>
+            <button onClick={saveEdit} className="btn-primary" style={{ borderRadius: 12, padding: '0 16px', fontSize: 13, fontWeight: 600 }}>Guardar</button>
+            <button onClick={() => setEditing(false)} className="btn-ghost" style={{ borderRadius: 12, padding: '0 12px', fontSize: 12, fontWeight: 500 }}>Cancelar</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <h2 className="display-font tabular" style={{ fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1.05, color: balanceToday >= 0 ? 'var(--text)' : 'var(--danger)' }}>
+            {fmt(balanceToday)}
+          </h2>
+          <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>
+            Base {fmt(startingCash)} {sim.confirmedCount > 0 ? `· ${sim.confirmedCount} movimiento${sim.confirmedCount !== 1 ? 's' : ''} confirmado${sim.confirmedCount !== 1 ? 's' : ''}` : ''}
+          </p>
+        </>
+      )}
 
       {/* Forecast strip */}
       <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border-soft)', display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
@@ -2592,7 +2630,7 @@ function NetWorthCard({ data, currency, hideAmounts }) {
   );
 }
 
-function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTransaction, onConfirm, onConfirmDebt }) {
+function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTransaction, onConfirm, onConfirmDebt, onUpdateSavings }) {
   const { debts, incomes, expenses, transactions } = data;
 
   const totalDebt = useMemo(() => debts.filter(d => !d.archived).reduce((s, d) => s + Math.max(0, d.totalAmount - (d.paidAmount || 0)), 0), [debts]);
@@ -3016,7 +3054,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
               boxShadow: `0 0 10px ${thisMonthFlow >= 0 ? 'var(--primary)' : 'var(--danger)'}`,
             }} />
             <p style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
-              {monthRealStats.hasAnyConfirmed ? 'Real este mes' : 'Flujo de este mes'}
+              {monthRealStats.hasAnyConfirmed ? 'Real este mes' : 'Proyección del mes'}
             </p>
           </div>
           {monthRealStats.hasAnyConfirmed && (
@@ -3076,7 +3114,9 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
             }}>
               {thisMonthFlow >= 0 ? '+' : ''}{formatMoney(thisMonthFlow, currency, hideAmounts)}
             </h2>
-            <p style={{ fontSize: 13, color: 'var(--text-dim)', letterSpacing: '-0.005em' }}>Ingresos − Egresos − Deudas</p>
+            <p style={{ fontSize: 13, color: 'var(--text-dim)', letterSpacing: '-0.005em' }}>
+              Estimación si pagas todo lo del mes. Confirma cada pago para ver el real.
+            </p>
           </>
         )}
         </div>
@@ -3109,11 +3149,14 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
           </div>
         )}
 
+        {/* Stat strip: shows what actually happens THIS month (not annualized average).
+            Uses projection[0] which respects future-start debts and current-month
+            primas/anuales — so the numbers reconcile with the hero number above. */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginTop: 20, paddingTop: 20, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
           {[
-            { Icon: ArrowUp, color: 'var(--primary)', label: 'Ingresos', value: monthlyIncome },
-            { Icon: ArrowDown, color: 'var(--danger)', label: 'Egresos', value: monthlyExpense },
-            { Icon: CreditCard, color: 'var(--warning)', label: 'Deudas', value: monthlyDebtPayment },
+            { Icon: ArrowUp,    color: 'var(--primary)', label: 'Ingresos este mes',  value: projection[0] ? projection[0].income      : monthlyIncome },
+            { Icon: ArrowDown,  color: 'var(--danger)',  label: 'Egresos este mes',   value: projection[0] ? projection[0].expense     : monthlyExpense },
+            { Icon: CreditCard, color: 'var(--warning)', label: 'Cuotas este mes',    value: projection[0] ? projection[0].debtPayment : monthlyDebtPayment },
           ].map((item, i) => (
             <div key={i}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
@@ -3129,7 +3172,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
       </div>
 
       {/* === REAL BALANCE TODAY: live cash on hand + day-by-day simulation === */}
-      <RealBalanceCard sim={dailySim} savings={data.savings} currency={currency} hideAmounts={hideAmounts} onNavigate={onNavigate} />
+      <RealBalanceCard sim={dailySim} savings={data.savings} currency={currency} hideAmounts={hideAmounts} onNavigate={onNavigate} onSetBalance={(amount) => onUpdateSavings && onUpdateSavings({ currentBalance: amount, balanceUpdatedAt: new Date().toISOString() })} />
 
       {/* === NET WORTH: historical trend === */}
       <NetWorthCard data={data} currency={currency} hideAmounts={hideAmounts} />
@@ -7347,7 +7390,7 @@ function FinanzasApp() {
       {(() => {
         const screens = (
           <>
-            {tab === 'home' && <Dashboard data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onNavigate={setTab} onPayDebt={(d) => setPayDebtSheet(d)} onAddTransaction={(t) => setQuickAdd(t)} onConfirm={handleConfirm} onConfirmDebt={handleConfirmDebtPayment} />}
+            {tab === 'home' && <Dashboard data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onNavigate={setTab} onPayDebt={(d) => setPayDebtSheet(d)} onAddTransaction={(t) => setQuickAdd(t)} onConfirm={handleConfirm} onConfirmDebt={handleConfirmDebtPayment} onUpdateSavings={handleUpdateSavings} />}
             {tab === 'debts' && <DebtsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveDebt} onDelete={handleDeleteDebt} onArchive={handleArchiveDebt} onPay={handlePayDebt} />}
             {tab === 'movements' && <MovementsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveMovement} onDelete={handleDeleteMovement} onBulkAdd={handleBulkAddExpenses} onSetBudget={handleSetBudget} />}
             {tab === 'projection' && <PlanesScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onUpdateSavings={handleUpdateSavings} onSavePlan={handleSavePlan} onDeletePlan={handleDeletePlan} />}
