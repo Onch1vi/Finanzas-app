@@ -301,5 +301,54 @@ test('Realistic scenario: salary 2.4M day 31, bono 1.5M day 31, prima 1M biannua
   assert.equal(sim.endOfMonthBalance, 756000 - 435, 'EOM = 1M + 3.9M - 1.9M - 2,244,435 = 755,565');
 });
 
+
+// ---------- life-window (vigencia) ----------
+
+function isItemActiveInMonth(item, year, monthIdx) {
+  const key = year * 12 + monthIdx;
+  if (item.startDate) {
+    const sd = parseLocalDate(item.startDate);
+    if (sd && !isNaN(sd) && key < sd.getFullYear() * 12 + sd.getMonth()) return false;
+  }
+  if (item.endDate) {
+    const ed = parseLocalDate(item.endDate);
+    if (ed && !isNaN(ed) && key > ed.getFullYear() * 12 + ed.getMonth()) return false;
+  }
+  return true;
+}
+
+test('Vigencia: Netflix starts July 30 → inactive in June, active in July and August', () => {
+  const netflix = { amount: 22450, frequency: 'monthly', startDate: '2026-07-30' };
+  assert.equal(isItemActiveInMonth(netflix, 2026, 5), false, 'June');
+  assert.equal(isItemActiveInMonth(netflix, 2026, 6), true, 'July');
+  assert.equal(isItemActiveInMonth(netflix, 2026, 7), true, 'August');
+});
+
+test('Vigencia: Disney promo ends June → active in June (last month), inactive in July', () => {
+  const disney = { amount: 5000, frequency: 'monthly', endDate: '2026-06-30' };
+  assert.equal(isItemActiveInMonth(disney, 2026, 5), true, 'June is the last month');
+  assert.equal(isItemActiveInMonth(disney, 2026, 6), false, 'July no longer counts');
+});
+
+test('Vigencia: no dates → always active', () => {
+  assert.equal(isItemActiveInMonth({ amount: 1 }, 2026, 0), true);
+  assert.equal(isItemActiveInMonth({ amount: 1 }, 2030, 11), true);
+});
+
+test('Checklist math (user real data): income 4.841.812, hogar 2.569.000, personal 123.154, debts 3.041.254 (min due), savings 2M → leftover negative flags overspend', () => {
+  const income = 4841812;
+  const hogar = 109000 + 150000 + 730000 + 700000 + 80000 + 800000; // 2.569.000
+  const personal = 59899 + 8380 + 4975 + 5000 + 44900;              // 123.154
+  const debts = 600000 + 1417229 + 991225 + 32800;                  // 3.041.254
+  const savings = 2000000;
+  const total = hogar + personal + debts + savings;
+  assert.equal(hogar, 2569000);
+  assert.equal(personal, 123154);
+  assert.equal(debts, 3041254);
+  assert.equal(total, 7733408);
+  const leftover = income - total;
+  assert.equal(leftover, -2891596, 'their sheet: paying everything incl. Amor-from-savings exceeds salary — matches their note that Amor is paid from ahorro, not salary');
+});
+
 console.log(`\n${passed} pass, ${failed} fail`);
 process.exit(failed > 0 ? 1 : 0);

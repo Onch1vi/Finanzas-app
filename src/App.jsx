@@ -433,8 +433,35 @@ function previousBusinessDay(date) {
 //  - Plans (lifestyle changes, purchases, loans with grace periods)
 //  - Savings balance evolution
 // ============================================================================
+// Optional life-window on recurring items: an item only counts in months
+// between startDate and endDate (month granularity). Lets you register
+// "Netflix empieza el próximo ciclo" or "Disney es el último mes" and the
+// engine phases them in/out automatically.
+function isItemActiveInMonth(item, year, monthIdx) {
+  const key = year * 12 + monthIdx;
+  if (item.startDate) {
+    const sd = parseLocalDate(item.startDate);
+    if (sd && !isNaN(sd) && key < sd.getFullYear() * 12 + sd.getMonth()) return false;
+  }
+  if (item.endDate) {
+    const ed = parseLocalDate(item.endDate);
+    if (ed && !isNaN(ed) && key > ed.getFullYear() * 12 + ed.getMonth()) return false;
+  }
+  return true;
+}
+
+// True when this month is the item's LAST month (endDate falls in it) —
+// used to show "último mes · recuerda cancelar" reminders.
+function isItemLastMonth(item, year, monthIdx) {
+  if (!item.endDate) return false;
+  const ed = parseLocalDate(item.endDate);
+  if (!ed || isNaN(ed)) return false;
+  return ed.getFullYear() === year && ed.getMonth() === monthIdx;
+}
+
 function getIncomeForMonth(item, year, monthIdx) {
   if (!item.active) return 0;
+  if (item.frequency !== 'once' && !isItemActiveInMonth(item, year, monthIdx)) return 0;
   if (item.frequency === 'once') {
     if (!item.onceDate) return 0;
     const d = parseLocalDate(item.onceDate);
@@ -908,6 +935,11 @@ function buildPlanAllocations(plans, allocatedProjection, currentSavings, mainGo
 // Convert any frequency to monthly equivalent (legacy, for current-month sums)
 function getMonthlyEquivalent(item) {
   const a = item.amount || 0;
+  {
+    // Respect the item's life-window relative to the current month
+    const now = new Date();
+    if (item.frequency !== 'once' && !isItemActiveInMonth(item, now.getFullYear(), now.getMonth())) return 0;
+  }
   if (item.frequency === 'once') {
     // One-time only counts in its specific month
     if (!item.onceDate) return 0;
@@ -987,7 +1019,7 @@ function simulateMonthDaily(data, today = new Date()) {
     return Math.min(Math.max(1, day || 1), lastDay);
   };
 
-  (data.incomes || []).filter(i => i.active).forEach(i => {
+  (data.incomes || []).filter(i => i.active && (i.frequency === 'once' || isItemActiveInMonth(i, t.getFullYear(), t.getMonth()))).forEach(i => {
     const freq = i.frequency || 'monthly';
     if (freq === 'once') {
       if (!i.onceDate) return;
@@ -1038,7 +1070,7 @@ function simulateMonthDaily(data, today = new Date()) {
     events.push({ date: new Date(t.getFullYear(), t.getMonth(), day), amount: i.amount || 0, name: i.name, kind: 'income', key, confirmed: !!confirms[key] });
   });
 
-  (data.expenses || []).filter(e => e.active).forEach(e => {
+  (data.expenses || []).filter(e => e.active && (e.frequency === 'once' || isItemActiveInMonth(e, t.getFullYear(), t.getMonth()))).forEach(e => {
     const freq = e.frequency || 'monthly';
     if (freq === 'once') {
       if (!e.onceDate) return;
@@ -1107,6 +1139,15 @@ function simulateMonthDaily(data, today = new Date()) {
     const due = Math.max(0, Math.min(d.minimumPayment || 0, remaining));
     events.push({ date, amount: -due, name: d.name, kind: 'debt', key, confirmed: !!confirms[key] });
   });
+
+  // Monthly savings contribution: the user treats it as one more "payment"
+  // of the cycle (e.g. Ahorro: 2.000.000). Cash leaves the account when
+  // confirmed; the pot increase happens in handleConfirmSavings.
+  const savContrib = (data.savings && data.savings.monthlyContribution) || 0;
+  if (savContrib > 0) {
+    const key = `sav-monthly-${monthKey}`;
+    events.push({ date: new Date(monthEnd), amount: -savContrib, name: 'Ahorro del mes', kind: 'savings', key, confirmed: !!confirms[key] });
+  }
 
   events.sort((a, b) => a.date - b.date);
 
@@ -1730,11 +1771,15 @@ function buildFinancialAdvice(data, currency) {
 
 // ============================================================================
 //  NET WORTH — patrimonio neto histórico
-//  Net worth = efectivo + ahorros formales - deudas activas (no archivadas).
-//  Snapshots automáticos al cambiar de mes para construir la serie histórica.
+//  Net worth = efectivo REAL + ahorros formales - deudas activas.
+//  "Efectivo real" = base declarada ajustada por los movimientos confirmados
+//  del mes (simulateMonthDaily.realBalanceToday) — así, confirmar un pago
+//  baja el patrimonio de inmediato en vez de esperar a que el usuario
+//  actualice la base a mano.
 // ============================================================================
 function computeCurrentNetWorth(data) {
-  const cash = (data.savings && data.savings.currentBalance) || 0;
+  let cash = (data.savings && data.savings.currentBalance) || 0;
+  try { cash = simulateMonthDaily(data).realBalanceToday; } catch (e) { /* fall back to raw base */ }
   const savings = (data.savings && data.savings.current) || 0;
   const debts = (data.debts || []).filter(d => !d.archived)
     .reduce((s, d) => s + Math.max(0, (d.totalAmount || 0) - (d.paidAmount || 0)), 0);
@@ -2717,7 +2762,238 @@ function NetWorthCard({ data, currency, hideAmounts }) {
   );
 }
 
-function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTransaction, onConfirm, onConfirmDebt, onUpdateSavings }) {
+// ============================================================================
+//  CYCLE CHECKLIST — the user's notepad, as a living widget.
+//  Groups this month's payments like their sheet (Hogar / Personales /
+//  Deudas / Ahorro), each with a check circle (their "blue highlight"),
+//  per-section subtotals, grand total, and "cuánto te queda libre".
+// ============================================================================
+const CHECKLIST_GROUPS = [
+  { id: 'hogar', label: 'Hogar', cats: ['housing', 'utilities', 'food', 'transport'] },
+  { id: 'personal', label: 'Pagos personales', cats: ['subscriptions', 'leisure', 'health', 'other-expense'] },
+];
+
+function CycleChecklist({ data, currency, hideAmounts, projection, onConfirm, onConfirmDebt, onConfirmSavings }) {
+  const today = new Date();
+  const year = today.getFullYear(), monthIdx = today.getMonth();
+  const monthKey = `${year}-${String(monthIdx + 1).padStart(2, '0')}`;
+  const confirms = (data.confirmations && data.confirmations[monthKey]) || {};
+  const fmt = (n) => formatMoney(n, currency, hideAmounts);
+  const monthName = today.toLocaleDateString('es-CO', { month: 'long' });
+
+  // Amount an expense contributes THIS month (0 = doesn't apply this month)
+  const monthAmount = (e) => {
+    const freq = e.frequency || 'monthly';
+    if (freq !== 'once' && !isItemActiveInMonth(e, year, monthIdx)) return 0;
+    if (freq === 'monthly') return e.amount || 0;
+    if (freq === 'biweekly') return (e.amount || 0) * 2;
+    if (freq === 'weekly') return (e.amount || 0) * 4;
+    if (freq === 'biannual') {
+      let hits = 0;
+      [e.firstPayment, e.secondPayment].forEach(p => { if (p && p.month === monthIdx + 1) hits++; });
+      return (e.amount || 0) * hits;
+    }
+    if (freq === 'annual') return (e.annualMonth || 12) === monthIdx + 1 ? (e.amount || 0) : 0;
+    if (freq === 'once' && e.onceDate) {
+      const d = parseLocalDate(e.onceDate);
+      return d && d.getFullYear() === year && d.getMonth() === monthIdx ? (e.amount || 0) : 0;
+    }
+    return 0;
+  };
+
+  // Build sections
+  const sections = [];
+  CHECKLIST_GROUPS.forEach(g => {
+    const items = (data.expenses || []).filter(e => e.active && g.cats.includes(e.category))
+      .map(e => ({ raw: e, amount: monthAmount(e) }))
+      .filter(x => x.amount > 0)
+      .map(x => ({
+        id: `exp-${x.raw.id}`,
+        confirmKey: `exp-${x.raw.id}-${monthKey}`,
+        name: x.raw.name,
+        note: x.raw.notes || '',
+        lastMonth: isItemLastMonth(x.raw, year, monthIdx),
+        multi: x.raw.frequency === 'biweekly' ? '×2 quincenas' : x.raw.frequency === 'weekly' ? '×4 semanas' : '',
+        amount: x.amount,
+        kind: 'expense',
+      }));
+    if (items.length > 0) sections.push({ ...g, items });
+  });
+
+  // Debts due this month
+  const debtItems = (data.debts || [])
+    .filter(d => !d.archived && (d.totalAmount - (d.paidAmount || 0)) > 0)
+    .filter(d => {
+      if (!isDebtFutureStart(d, today)) return true;
+      const ds = parseLocalDate(d.startDate);
+      return ds && ds.getFullYear() === year && ds.getMonth() === monthIdx;
+    })
+    .map(d => {
+      const remaining = d.totalAmount - (d.paidAmount || 0);
+      const due = Math.max(0, Math.min(d.minimumPayment || 0, remaining));
+      const isLastPayment = due >= remaining;
+      return {
+        id: `debt-${d.id}`,
+        confirmKey: `debt-${d.id}-${monthKey}`,
+        debtId: d.id,
+        name: d.name + (d.creditor ? ` (${d.creditor})` : ''),
+        note: d.notes || (isLastPayment ? 'termino de pagar' : ''),
+        amount: due,
+        kind: 'debt',
+      };
+    })
+    .filter(x => x.amount > 0);
+  if (debtItems.length > 0) sections.push({ id: 'deudas', label: 'Deudas', items: debtItems });
+
+  // Savings contribution as one more "payment" (their Ahorro: 2.000.000 line)
+  const savContrib = (data.savings && data.savings.monthlyContribution) || 0;
+  if (savContrib > 0) {
+    sections.push({
+      id: 'ahorro', label: 'Ahorro',
+      items: [{
+        id: 'sav-monthly', confirmKey: `sav-monthly-${monthKey}`,
+        name: 'Ahorro del mes', note: 'se suma a tus ahorros al marcarlo',
+        amount: savContrib, kind: 'savings',
+      }],
+    });
+  }
+
+  if (sections.length === 0) return null;
+
+  const allItems = sections.flatMap(s => s.items);
+  const grandTotal = allItems.reduce((s, it) => s + it.amount, 0);
+  const paidTotal = allItems.filter(it => !!confirms[it.confirmKey]).reduce((s, it) => s + it.amount, 0);
+  const paidCount = allItems.filter(it => !!confirms[it.confirmKey]).length;
+  const monthIncome = projection && projection[0] ? projection[0].income : 0;
+  const leftover = monthIncome - grandTotal;
+  const progress = grandTotal > 0 ? (paidTotal / grandTotal) * 100 : 0;
+
+  const toggle = (item) => {
+    if (item.kind === 'debt') onConfirmDebt(item.debtId, item.amount, monthKey);
+    else if (item.kind === 'savings') onConfirmSavings(monthKey, item.amount);
+    else onConfirm(item.confirmKey, { monthKey, amount: item.amount, name: item.name });
+  };
+
+  return (
+    <div className="animate-slideup card-elevated desk-full" style={{ padding: '20px 18px' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 4 }}>
+        <div>
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={14} color="var(--primary)" strokeWidth={2.4} />
+            <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Checklist de {monthName}</span>
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Marca cada pago como en tu bloc de notas</p>
+        </div>
+        <span className="tabular" style={{ fontSize: 11.5, fontWeight: 700, color: paidCount === allItems.length ? 'var(--primary)' : 'var(--text-dim)' }}>
+          {paidCount}/{allItems.length} pagados
+        </span>
+      </div>
+
+      <div className="progress-track" style={{ margin: '10px 0 16px' }}>
+        <div className="progress-fill" style={{ width: `${progress}%` }} />
+      </div>
+
+      {sections.map(section => {
+        const subtotal = section.items.reduce((s, it) => s + it.amount, 0);
+        const subPaid = section.items.filter(it => !!confirms[it.confirmKey]).reduce((s, it) => s + it.amount, 0);
+        return (
+          <div key={section.id} style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+              <h4 className="display-font" style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>{section.label}</h4>
+              <span className="tabular" style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-muted)' }}>
+                {subPaid > 0 && <span style={{ color: 'var(--primary)' }}>{formatCompact(subPaid, currency, hideAmounts)} ✓ · </span>}
+                Total: <span style={{ color: 'var(--text)' }}>{fmt(subtotal)}</span>
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {section.items.map(item => {
+                const done = !!confirms[item.confirmKey];
+                return (
+                  <button key={item.id} onClick={() => toggle(item)} className="w-full text-left" style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '9px 12px', borderRadius: 12, cursor: 'pointer',
+                    background: done ? 'var(--primary-glow)' : 'var(--surface-2)',
+                    border: done ? '1px solid rgba(52,211,153,0.3)' : '1px solid var(--border-soft)',
+                    transition: 'all 0.2s var(--ease-soft)',
+                  }}>
+                    <span style={{
+                      width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+                      border: done ? 'none' : '2px solid var(--border-strong)',
+                      background: done ? 'var(--primary)' : 'transparent',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      transition: 'all 0.2s var(--ease-spring)',
+                    }}>
+                      {done && <Check size={12} color="#04130D" strokeWidth={3.5} />}
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span className="truncate" style={{
+                        display: 'block', fontSize: 13.5, fontWeight: 500,
+                        textDecoration: done ? 'line-through' : 'none',
+                        color: done ? 'var(--text-dim)' : 'var(--text)',
+                      }}>{item.name}{item.multi ? ` · ${item.multi}` : ''}</span>
+                      {(item.note || item.lastMonth) && (
+                        <span style={{ display: 'block', fontSize: 10.5, color: item.lastMonth ? 'var(--warning)' : 'var(--text-muted)', marginTop: 1 }}>
+                          {item.lastMonth ? '⚠ último mes · recuerda cancelar' : `// ${item.note}`}
+                        </span>
+                      )}
+                    </span>
+                    <span className="tabular" style={{
+                      fontSize: 13.5, fontWeight: 600, whiteSpace: 'nowrap',
+                      color: done ? 'var(--primary)' : 'var(--text)',
+                    }}>{fmt(item.amount)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Footer: their "Total a pagar" + "Cuánto me sobra" */}
+      <div style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
+          <span style={{ color: 'var(--text-dim)' }}>Ingresos del mes</span>
+          <span className="tabular" style={{ fontWeight: 600, color: 'var(--primary)' }}>+{fmt(monthIncome)}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
+          <span style={{ color: 'var(--text-dim)' }}>Total a pagar</span>
+          <span className="tabular" style={{ fontWeight: 600, color: 'var(--danger)' }}>−{fmt(grandTotal)}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingTop: 6, borderTop: '1px dashed var(--border-soft)' }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>Te queda libre</span>
+          <span className="display-font tabular" style={{ fontSize: 20, fontWeight: 600, color: leftover >= 0 ? 'var(--primary)' : 'var(--danger)' }}>
+            {fmt(leftover)}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// === Personal notes — their "Anotaciones para mi" section ===
+function PersonalNotesCard({ notes, onSave }) {
+  const [draft, setDraft] = useState(notes || '');
+  useEffect(() => { setDraft(notes || ''); }, [notes]);
+  return (
+    <div className="animate-slideup card desk-full" style={{ padding: 16 }}>
+      <div className="flex items-center gap-2 mb-2">
+        <Edit3 size={13} color="var(--accent)" />
+        <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Anotaciones para mí</span>
+      </div>
+      <textarea
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={() => { if (draft !== (notes || '')) onSave(draft); }}
+        placeholder={'Ej. "Este mes no pedir más préstamos"\n"La deuda de amor se paga con ahorro"'}
+        className="input-base w-full handwritten"
+        rows={3}
+        style={{ borderRadius: 12, padding: '10px 12px', fontSize: 17, lineHeight: 1.5, resize: 'vertical', background: 'var(--surface-2)', border: '1px solid var(--border-soft)', color: 'var(--text-dim)' }}
+      />
+    </div>
+  );
+}
+
+function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTransaction, onConfirm, onConfirmDebt, onUpdateSavings, onConfirmSavings, onSaveNotes }) {
   const { debts, incomes, expenses, transactions } = data;
 
   const totalDebt = useMemo(() => debts.filter(d => !d.archived).reduce((s, d) => s + Math.max(0, d.totalAmount - (d.paidAmount || 0)), 0), [debts]);
@@ -2765,6 +3041,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
     // For biannual/annual: only counts in months when they fire.
     const monthAmount = (item) => {
       const freq = item.frequency || 'monthly';
+      if (freq !== 'once' && !isItemActiveInMonth(item, monthStart.getFullYear(), monthStart.getMonth())) return 0;
       if (freq === 'once') {
         if (!item.onceDate) return 0;
         const d = parseLocalDate(item.onceDate);
@@ -2993,7 +3270,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
     });
 
     // Recurring expenses (with overdue detection for current month)
-    expenses.filter(e => e.active).forEach(e => {
+    expenses.filter(e => e.active && (e.frequency === 'once' || isItemActiveInMonth(e, today.getFullYear(), today.getMonth()))).forEach(e => {
       try {
         const occThis = thisMonthOccurrence(e);
         const monthKey = getMonthKey(today);
@@ -3027,7 +3304,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
     });
 
     // Expected incomes (with overdue: salary expected but not received yet)
-    incomes.filter(i => i.active).forEach(i => {
+    incomes.filter(i => i.active && (i.frequency === 'once' || isItemActiveInMonth(i, today.getFullYear(), today.getMonth()))).forEach(i => {
       try {
         const occThis = thisMonthOccurrence(i);
         const monthKey = getMonthKey(today);
@@ -3257,6 +3534,9 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
           ))}
         </div>
       </div>
+
+      {/* === CYCLE CHECKLIST: the user's notepad as a living widget === */}
+      <CycleChecklist data={data} currency={currency} hideAmounts={hideAmounts} projection={projection} onConfirm={onConfirm} onConfirmDebt={onConfirmDebt} onConfirmSavings={onConfirmSavings} />
 
       {/* === REAL BALANCE TODAY: live cash on hand + day-by-day simulation === */}
       <RealBalanceCard sim={dailySim} savings={data.savings} currency={currency} hideAmounts={hideAmounts} onNavigate={onNavigate} onSetBalance={(amount) => onUpdateSavings && onUpdateSavings({ currentBalance: amount, balanceUpdatedAt: new Date().toISOString() })} />
@@ -3519,6 +3799,9 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
           <span className="text-xs font-medium">Pagar deuda</span>
         </button>
       </div>
+
+      {/* === PERSONAL NOTES: freeform reminders, like the notepad's last section === */}
+      <PersonalNotesCard notes={data.userNotes} onSave={onSaveNotes} />
 
       {!hasData && (
         <div className="animate-slideup rounded-2xl p-6 text-center desk-full" style={{ background: 'var(--surface)', border: '1px dashed var(--border)' }}>
@@ -4150,6 +4433,8 @@ function MovementsScreen({ data, currency, hideAmounts, onSave, onDelete, onBulk
                   <div style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>
                     <p className="truncate" style={{ fontSize: 13.5, fontWeight: 500, letterSpacing: '-0.005em' }}>{item.name}</p>
                     <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1, fontWeight: 500 }}>{cat.name} · {item.frequency === 'once' ? (item.onceDate ? `Una vez · ${formatDateShort(parseLocalDate(item.onceDate))}` : 'Una vez') : item.frequency === 'biannual' ? `Semestral` : item.frequency === 'annual' ? `Anual` : `día ${item.dayOfMonth} · ${item.frequency === 'monthly' ? 'Mensual' : item.frequency === 'biweekly' ? 'Quincenal' : 'Semanal'}`}</p>
+                    {item.notes && <p className="truncate" style={{ fontSize: 10.5, color: 'var(--text-faint)', marginTop: 1, fontStyle: 'italic' }}>// {item.notes}</p>}
+                    {isItemLastMonth(item, new Date().getFullYear(), new Date().getMonth()) && <p style={{ fontSize: 10.5, color: 'var(--warning)', marginTop: 1, fontWeight: 600 }}>⚠ último mes · recuerda cancelar</p>}
                   </div>
                   <span className="tabular" style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em', color: type === 'income' ? 'var(--primary)' : 'var(--danger)' }}>{type === 'income' ? '+' : '−'}{formatCompact(item.amount, currency, hideAmounts)}</span>
                 </button>
@@ -4242,6 +4527,9 @@ function MovementForm({ type, initial, currency, onSave, onDelete }) {
     firstPayment: { month: 6, day: 30 }, secondPayment: { month: 12, day: 20 },
     annualMonth: 12,
     onceDate: today,
+    notes: '',        // e.g. "mensual fijo", "último mes de la promoción"
+    startDate: '',    // vigencia: empieza a contar desde este mes
+    endDate: '',      // vigencia: deja de contar después de este mes
   };
   // Backfill anchorDate for items created before this field existed
   const initialFilled = initial ? { ...defaultForm, ...initial } : defaultForm;
@@ -4402,6 +4690,28 @@ function MovementForm({ type, initial, currency, onSave, onDelete }) {
         <span className="text-sm font-medium">Activo</span>
         <input type="checkbox" checked={form.active} onChange={e => update('active', e.target.checked)} className="w-5 h-5 rounded accent-emerald-500" />
       </label>
+
+      <TextField label="Nota (como en tu bloc)" value={form.notes} onChange={v => update('notes', v)} placeholder='Ej. "mensual fijo", "último mes de la promoción"' />
+
+      {form.frequency !== 'once' && (
+        <details className="rounded-2xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)', padding: '12px 14px' }}>
+          <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, userSelect: 'none' }}>
+            Vigencia (opcional) {form.startDate || form.endDate ? '· configurada' : ''}
+          </summary>
+          <div className="space-y-3" style={{ marginTop: 12 }}>
+            <div>
+              <span className="text-xs font-medium block mb-1.5 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Empieza a contar desde</span>
+              <input type="date" value={form.startDate || ''} onChange={e => update('startDate', e.target.value)} className="input-base w-full rounded-xl px-4 py-3 text-base" style={{ colorScheme: 'dark' }} />
+              <p className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)' }}>Para gastos que empiezan el próximo ciclo (ej. Netflix desde el 30 de julio). Antes de esta fecha no cuenta.</p>
+            </div>
+            <div>
+              <span className="text-xs font-medium block mb-1.5 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Último mes (recordatorio de cancelar)</span>
+              <input type="date" value={form.endDate || ''} onChange={e => update('endDate', e.target.value)} className="input-base w-full rounded-xl px-4 py-3 text-base" style={{ colorScheme: 'dark' }} />
+              <p className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)' }}>Ej. Disney termina la promoción este mes, o Upwork que vas a cancelar. En su último mes verás el aviso "recuerda cancelar" y después deja de contar solo.</p>
+            </div>
+          </div>
+        </details>
+      )}
 
       {valid && (form.frequency !== 'monthly' || form.adjustForBusinessDay) && (
         <div className="rounded-2xl p-3 text-xs" style={{ background: 'var(--primary-glow)', border: '1px solid rgba(52,211,153,0.25)' }}>
@@ -4897,6 +5207,12 @@ function SavingsForm({ savings, currency, onSave }) {
         <span className="text-xs font-medium block mb-1.5 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Ahorros formales (cuenta de ahorros / inversiones)</span>
         <MoneyInput value={form.current} onChange={v => setForm(s => ({...s, current: v}))} currency={currency} />
         <p className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)' }}>Lo que ya tienes guardado y separado para metas. No incluye la plata para gastos del mes.</p>
+      </div>
+
+      <div>
+        <span className="text-xs font-medium block mb-1.5 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Cuánto ahorras cada mes (aparece en tu checklist)</span>
+        <MoneyInput value={form.monthlyContribution || 0} onChange={v => setForm(s => ({...s, monthlyContribution: v}))} currency={currency} />
+        <p className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)' }}>Como la línea "Ahorro: 2.000.000" de tu bloc. Sale en el checklist del mes como un pago más; al marcarlo, se suma a tus ahorros formales automáticamente.</p>
       </div>
 
       <div className="rounded-2xl p-3 space-y-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
@@ -6912,7 +7228,7 @@ function FinanzasApp() {
   const [data, setData] = useState({
     user: { name: '', currency: 'COP', themeOverride: null },
     debts: [], incomes: [], expenses: [], transactions: [], plans: [],
-    savings: { current: 0, goal: 0, goalDate: '', emergencyMonths: 3, lifeBudgetPct: 0.15, bufferPct: 0.10, minLifeBudget: 0, currentBalance: 0, balanceUpdatedAt: '' },
+    savings: { current: 0, goal: 0, goalDate: '', emergencyMonths: 3, lifeBudgetPct: 0.15, bufferPct: 0.10, minLifeBudget: 0, currentBalance: 0, balanceUpdatedAt: '', monthlyContribution: 0 },
     settings: { hideAmounts: false, notificationsEnabled: false },
     // confirmations: tracks which payments/incomes have been marked as "actually happened"
     // Format: { 'YYYY-MM': { 'incomeId-itemId': { amount, date, note }, 'expenseId-itemId': {...}, 'debtPayment-itemId': {...} } }
@@ -6965,7 +7281,7 @@ function FinanzasApp() {
       savings: {
         current: 0, goal: 0, goalDate: '', emergencyMonths: 3,
         lifeBudgetPct: 0.15, bufferPct: 0.10, minLifeBudget: 0,
-        currentBalance: 0, balanceUpdatedAt: '',
+        currentBalance: 0, balanceUpdatedAt: '', monthlyContribution: 0,
         ...((parsed && parsed.savings) || {}),
       },
     }));
@@ -7387,6 +7703,35 @@ function FinanzasApp() {
     updateData(prev => ({ ...prev, savings: { ...prev.savings, ...savings } }));
     setToast('Ahorros actualizados');
   };
+  // Checklist "Ahorro del mes": confirming moves the amount into formal savings;
+  // unconfirming rolls it back (mirrors the debt-confirm pattern).
+  const handleConfirmSavings = (monthKey, amount) => {
+    const key = `sav-monthly-${monthKey}`;
+    let confirmed = false;
+    updateData(prev => {
+      const monthData = prev.confirmations[monthKey] || {};
+      const next = { ...monthData };
+      let savings = prev.savings;
+      if (next[key]) {
+        const stored = next[key];
+        const applied = stored.appliedAmount != null ? stored.appliedAmount : amount;
+        savings = { ...prev.savings, current: Math.max(0, (prev.savings.current || 0) - applied) };
+        delete next[key];
+        confirmed = false;
+      } else {
+        savings = { ...prev.savings, current: (prev.savings.current || 0) + amount };
+        next[key] = { confirmedAt: new Date().toISOString(), amount, appliedAmount: amount, name: 'Ahorro del mes' };
+        confirmed = true;
+      }
+      return { ...prev, savings, confirmations: { ...prev.confirmations, [monthKey]: next } };
+    });
+    setToast(confirmed ? 'Ahorro del mes guardado 💰' : 'Ahorro desmarcado');
+    if (confirmed) fireConfetti({ count: 90 });
+  };
+  const handleSaveNotes = (text) => {
+    updateData(prev => ({ ...prev, userNotes: text }));
+    setToast('Anotación guardada');
+  };
   const handleExportCalendar = () => {
     try {
       const ics = generateICS(data);
@@ -7466,7 +7811,7 @@ function FinanzasApp() {
     const fresh = {
       user: { name: '', currency: 'COP', themeOverride: null },
       debts: [], incomes: [], expenses: [], transactions: [], plans: [],
-      savings: { current: 0, goal: 0, goalDate: '', emergencyMonths: 3, lifeBudgetPct: 0.15, bufferPct: 0.10, minLifeBudget: 0, currentBalance: 0, balanceUpdatedAt: '' },
+      savings: { current: 0, goal: 0, goalDate: '', emergencyMonths: 3, lifeBudgetPct: 0.15, bufferPct: 0.10, minLifeBudget: 0, currentBalance: 0, balanceUpdatedAt: '', monthlyContribution: 0 },
       settings: { hideAmounts: false, notificationsEnabled: false },
       confirmations: {},
     };
@@ -7546,7 +7891,7 @@ function FinanzasApp() {
       {(() => {
         const screens = (
           <>
-            {tab === 'home' && <Dashboard data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onNavigate={setTab} onPayDebt={(d) => setPayDebtSheet(d)} onAddTransaction={(t) => setQuickAdd(t)} onConfirm={handleConfirm} onConfirmDebt={handleConfirmDebtPayment} onUpdateSavings={handleUpdateSavings} />}
+            {tab === 'home' && <Dashboard data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onNavigate={setTab} onPayDebt={(d) => setPayDebtSheet(d)} onAddTransaction={(t) => setQuickAdd(t)} onConfirm={handleConfirm} onConfirmDebt={handleConfirmDebtPayment} onUpdateSavings={handleUpdateSavings} onConfirmSavings={handleConfirmSavings} onSaveNotes={handleSaveNotes} />}
             {tab === 'debts' && <DebtsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveDebt} onDelete={handleDeleteDebt} onArchive={handleArchiveDebt} onPay={handlePayDebt} />}
             {tab === 'movements' && <MovementsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveMovement} onDelete={handleDeleteMovement} onBulkAdd={handleBulkAddExpenses} onSetBudget={handleSetBudget} />}
             {tab === 'projection' && <PlanesScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onUpdateSavings={handleUpdateSavings} onSavePlan={handleSavePlan} onDeletePlan={handleDeletePlan} />}
