@@ -135,7 +135,23 @@ function simulateMonthDaily(data, today = new Date()) {
     if (running < 0 && !wasNeg) { firstNeg = new Date(day); wasNeg = true; recovery = null; }
     if (wasNeg && running >= 0) { recovery = new Date(day); wasNeg = false; }
   }
-  return { startingCash, realBalanceToday, endOfMonthBalance: running, firstNegativeDate: firstNeg, recoveryDate: recovery, events };
+  const pendingAll = events.filter(ev => !ev.confirmed);
+  const nextIncomeEv = pendingAll.filter(ev => ev.amount > 0).sort((a,b) => a.date - b.date)[0] || null;
+  let availableUntilIncome;
+  if (nextIncomeEv) {
+    const before = pendingAll.filter(ev => ev !== nextIncomeEv && ev.date < nextIncomeEv.date);
+    availableUntilIncome = realBalanceToday + before.reduce((s, ev) => s + ev.amount, 0);
+  } else {
+    availableUntilIncome = running;
+  }
+  const pendingObligations = pendingAll.filter(ev => ev.amount < 0).reduce((s, ev) => s + (-ev.amount), 0);
+  return {
+    startingCash, realBalanceToday, endOfMonthBalance: running,
+    availableUntilIncome,
+    nextIncome: nextIncomeEv ? { date: nextIncomeEv.date, amount: nextIncomeEv.amount, name: nextIncomeEv.name } : null,
+    pendingObligations,
+    firstNegativeDate: firstNeg, recoveryDate: recovery, events,
+  };
 }
 
 function computeCurrentNetWorth(data) {
@@ -348,6 +364,43 @@ test('Checklist math (user real data): income 4.841.812, hogar 2.569.000, person
   assert.equal(total, 7733408);
   const leftover = income - total;
   assert.equal(leftover, -2891596, 'their sheet: paying everything incl. Amor-from-savings exceeds salary — matches their note that Amor is paid from ahorro, not salary');
+});
+
+
+// ---------- cash runway until next income (user's real scenario) ----------
+function computeRunway(sim){ return sim.availableUntilIncome; }
+
+test('Runway: cash 2.2M today, debts 1.769M due before payday, nómina 3.859M on Jul 31 → te queda 431K (not 2.09M)', () => {
+  // today = Jul 2; debts on days 1-20 (before payday); income Jul 31
+  const data = {
+    savings: { currentBalance: 2200000 },
+    incomes: [{ id:'nom', name:'Nómina', amount:3859800, active:true, frequency:'monthly', dayOfMonth:31 }],
+    expenses: [],
+    debts: [
+      { id:'a', name:'Internet', totalAmount:109000, paidAmount:0, minimumPayment:109000, interestRate:0, paymentDay:5, archived:false },
+      { id:'b', name:'Servicios', totalAmount:150000, paidAmount:0, minimumPayment:150000, interestRate:0, paymentDay:5, archived:false },
+      { id:'c', name:'Arriendo 1', totalAmount:730000, paidAmount:0, minimumPayment:730000, interestRate:0, paymentDay:5, archived:false },
+      { id:'d', name:'Arriendo 2', totalAmount:700000, paidAmount:0, minimumPayment:700000, interestRate:0, paymentDay:5, archived:false },
+      { id:'e', name:'Parqueadero', totalAmount:80000, paidAmount:0, minimumPayment:80000, interestRate:0, paymentDay:5, archived:false },
+    ],
+    confirmations: {},
+  };
+  const sim = simulateMonthDaily(data, new Date(2026, 6, 2)); // Jul 2 2026
+  // debts total = 109+150+730+700+80 = 1,769,000
+  assert.equal(sim.pendingObligations, 1769000);
+  // nómina is the next income, arrives Jul 31
+  assert.ok(sim.nextIncome, 'has next income');
+  assert.equal(sim.nextIncome.amount, 3859800);
+  // available until payday = 2.2M - 1.769M = 431,000  ← the user's number
+  assert.equal(sim.availableUntilIncome, 431000);
+  // end of month (after payday) = 431K + 3.859M = 4,290,800
+  assert.equal(sim.endOfMonthBalance, 4290800);
+});
+
+test('Runway: no income this month → available = end of month (all outflow)', () => {
+  const data = { savings:{currentBalance:1000000}, incomes:[], expenses:[], debts:[{id:'x',name:'D',totalAmount:300000,paidAmount:0,minimumPayment:300000,interestRate:0,paymentDay:10,archived:false}], confirmations:{} };
+  const sim = simulateMonthDaily(data, new Date(2026,6,2));
+  assert.equal(sim.availableUntilIncome, 700000);
 });
 
 console.log(`\n${passed} pass, ${failed} fail`);

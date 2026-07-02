@@ -1192,10 +1192,35 @@ function simulateMonthDaily(data, today = new Date()) {
   const endOfMonthBalance = days.length > 0 ? days[days.length - 1].balance : running;
   const lowestPoint = days.reduce((min, d) => d.balance < min.balance ? d : min, { balance: Infinity, date: null });
 
+  // === CASH RUNWAY until next income ===
+  // The user thinks day-to-day: "with the cash I have now, after paying what's
+  // due before my next paycheck, how much is left?" So we find the next pending
+  // income and sum every pending obligation (and any smaller income) that lands
+  // BEFORE it. availableUntilIncome = cash today +/- those movements.
+  const pendingAll = events.filter(ev => !ev.confirmed);
+  const nextIncomeEv = pendingAll
+    .filter(ev => ev.amount > 0)
+    .sort((a, b) => a.date - b.date)[0] || null;
+  let availableUntilIncome;
+  if (nextIncomeEv) {
+    const before = pendingAll.filter(ev => ev !== nextIncomeEv && ev.date < nextIncomeEv.date);
+    availableUntilIncome = realBalanceToday + before.reduce((s, ev) => s + ev.amount, 0);
+  } else {
+    // No income arriving this month → what you keep after all pending outflows
+    availableUntilIncome = endOfMonthBalance;
+  }
+  // Total still-pending obligations (outflows) this month, for the checklist footer
+  const pendingObligations = pendingAll.filter(ev => ev.amount < 0).reduce((s, ev) => s + (-ev.amount), 0);
+  const pendingIncome = pendingAll.filter(ev => ev.amount > 0).reduce((s, ev) => s + ev.amount, 0);
+
   return {
     startingCash,
     realBalanceToday,
     endOfMonthBalance,
+    availableUntilIncome,
+    nextIncome: nextIncomeEv ? { date: nextIncomeEv.date, amount: nextIncomeEv.amount, name: nextIncomeEv.name } : null,
+    pendingObligations,
+    pendingIncome,
     firstNegativeDate,
     recoveryDate,
     stillNegativeAtMonthEnd: wasNegative,
@@ -2809,7 +2834,7 @@ const CHECKLIST_GROUPS = [
   { id: 'personal', label: 'Pagos personales', cats: ['subscriptions', 'leisure', 'health', 'other-expense'] },
 ];
 
-function CycleChecklist({ data, currency, hideAmounts, projection, onConfirm, onConfirmDebt, onConfirmSavings }) {
+function CycleChecklist({ data, currency, hideAmounts, projection, sim, onConfirm, onConfirmDebt, onConfirmSavings }) {
   const today = new Date();
   const year = today.getFullYear(), monthIdx = today.getMonth();
   const monthKey = `${year}-${String(monthIdx + 1).padStart(2, '0')}`;
@@ -2900,9 +2925,15 @@ function CycleChecklist({ data, currency, hideAmounts, projection, onConfirm, on
   const grandTotal = allItems.reduce((s, it) => s + it.amount, 0);
   const paidTotal = allItems.filter(it => !!confirms[it.confirmKey]).reduce((s, it) => s + it.amount, 0);
   const paidCount = allItems.filter(it => !!confirms[it.confirmKey]).length;
-  const monthIncome = projection && projection[0] ? projection[0].income : 0;
-  const leftover = monthIncome - grandTotal;
   const progress = grandTotal > 0 ? (paidTotal / grandTotal) * 100 : 0;
+
+  // CASH-BASED footer (day-to-day reality, not future income):
+  // what you have now, what's still owed this month, and what's left to spend
+  // with the cash you actually have until your next paycheck lands.
+  const cashToday = sim ? sim.realBalanceToday : ((data.savings && data.savings.currentBalance) || 0);
+  const pendingOut = allItems.filter(it => !confirms[it.confirmKey]).reduce((s, it) => s + it.amount, 0);
+  const leftover = cashToday - pendingOut; // "te queda para gastar" hasta el próximo ingreso
+  const nextIncome = sim ? sim.nextIncome : null;
 
   const toggle = (item) => {
     if (item.kind === 'debt') onConfirmDebt(item.debtId, item.amount, monthKey);
@@ -2985,22 +3016,35 @@ function CycleChecklist({ data, currency, hideAmounts, projection, onConfirm, on
         );
       })}
 
-      {/* Footer: their "Total a pagar" + "Cuánto me sobra" */}
+      {/* Footer: CASH reality — what you have vs. what's still owed this month */}
       <div style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
-          <span style={{ color: 'var(--text-dim)' }}>Ingresos del mes</span>
-          <span className="tabular" style={{ fontWeight: 600, color: 'var(--primary)' }}>+{fmt(monthIncome)}</span>
+          <span style={{ color: 'var(--text-dim)' }}>Tienes hoy</span>
+          <span className="tabular" style={{ fontWeight: 600, color: 'var(--text)' }}>{fmt(cashToday)}</span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
-          <span style={{ color: 'var(--text-dim)' }}>Total a pagar</span>
-          <span className="tabular" style={{ fontWeight: 600, color: 'var(--danger)' }}>−{fmt(grandTotal)}</span>
+          <span style={{ color: 'var(--text-dim)' }}>Te falta pagar este mes</span>
+          <span className="tabular" style={{ fontWeight: 600, color: 'var(--danger)' }}>−{fmt(pendingOut)}</span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingTop: 6, borderTop: '1px dashed var(--border-soft)' }}>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>Te queda libre</span>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>Te queda para gastar</span>
           <span className="display-font tabular" style={{ fontSize: 20, fontWeight: 600, color: leftover >= 0 ? 'var(--primary)' : 'var(--danger)' }}>
             {fmt(leftover)}
           </span>
         </div>
+        {nextIncome && (
+          <div className="rounded-xl" style={{ marginTop: 6, padding: '8px 12px', background: 'var(--primary-glow)', border: '1px solid rgba(52,211,153,0.2)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <ArrowUp size={13} color="var(--primary)" strokeWidth={2.5} style={{ flexShrink: 0 }} />
+            <span style={{ fontSize: 11.5, color: 'var(--text-dim)', lineHeight: 1.4 }}>
+              Tu ingreso de <strong style={{ color: 'var(--primary)' }}>{fmt(nextIncome.amount)}</strong> llega el <strong style={{ color: 'var(--text)' }}>{formatDate(nextIncome.date)}</strong>. Ahí tu saldo sube.
+            </span>
+          </div>
+        )}
+        {leftover < 0 && (
+          <p style={{ fontSize: 11, color: 'var(--danger)', marginTop: 2, lineHeight: 1.4 }}>
+            ⚠ Con tu plata de hoy no alcanzas a cubrir todo lo del mes antes de tu próximo ingreso. Te faltan {fmt(-leftover)}.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -3431,18 +3475,21 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
 
   const hasData = debts.length > 0 || incomes.length > 0 || expenses.length > 0;
 
+  // Hero headline = spendable cash until the next paycheck (day-to-day reality)
+  const heroValue = dailySim.availableUntilIncome;
+  const heroPositive = heroValue >= 0;
   return (
     <div className="px-5 pb-32 space-y-4 stagger">
       <div className="animate-slideup card-hero" style={{
         padding: '24px 22px',
-        background: thisMonthFlow >= 0
+        background: heroPositive
           ? 'linear-gradient(160deg, #0F2E22 0%, #0A1A2E 60%, #07090F 100%)'
           : 'linear-gradient(160deg, #2E0F1A 0%, #1A0E2E 60%, #0E0710 100%)',
       }}>
         {/* Decorative orb */}
         <div style={{
           position: 'absolute', top: -60, right: -60, width: 200, height: 200, borderRadius: '50%',
-          background: `radial-gradient(circle, ${thisMonthFlow >= 0 ? 'var(--primary)' : 'var(--danger)'}, transparent 65%)`,
+          background: `radial-gradient(circle, ${heroPositive ? 'var(--primary)' : 'var(--danger)'}, transparent 65%)`,
           opacity: 0.18, filter: 'blur(8px)', pointerEvents: 'none',
         }} />
 
@@ -3450,75 +3497,59 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
           <div className="flex items-center gap-1.5">
             <span style={{
               width: 6, height: 6, borderRadius: '50%',
-              background: thisMonthFlow >= 0 ? 'var(--primary)' : 'var(--danger)',
-              boxShadow: `0 0 10px ${thisMonthFlow >= 0 ? 'var(--primary)' : 'var(--danger)'}`,
+              background: heroPositive ? 'var(--primary)' : 'var(--danger)',
+              boxShadow: `0 0 10px ${heroPositive ? 'var(--primary)' : 'var(--danger)'}`,
             }} />
             <p style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
-              {monthRealStats.hasAnyConfirmed ? 'Real este mes' : 'Proyección del mes'}
+              Te queda para gastar
             </p>
           </div>
-          {monthRealStats.hasAnyConfirmed && (
+          {dailySim.confirmedCount > 0 && (
             <span className="pill pill-good" style={{ padding: '3px 8px' }}>EN VIVO</span>
           )}
         </div>
 
-        <div key={monthRealStats.hasAnyConfirmed ? 'real' : 'projected'} className="animate-fadein">
-        {monthRealStats.hasAnyConfirmed ? (
-          <>
-            {/* Real flow display */}
-            <h2 key={`real-${Math.round(monthRealStats.realFlow)}`} className="display-font animate-count" style={{
-              fontSize: 42, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1,
-              color: monthRealStats.realFlow >= 0 ? 'var(--primary)' : 'var(--danger)',
-              marginBottom: 6, fontVariantNumeric: 'tabular-nums',
-            }}>
-              <CountUp value={monthRealStats.realFlow} format={(v) => (v >= 0 ? '+' : '') + formatMoney(v, currency, hideAmounts)} />
-            </h2>
-            <p style={{ fontSize: 12, color: 'var(--text-dim)', letterSpacing: '-0.005em', lineHeight: 1.4 }}>
-              Lo que realmente entró menos lo que ya pagaste · proyectado al cierre <span className="tabular" style={{ color: 'var(--text)', fontWeight: 600 }}>{monthRealStats.totalProjected >= 0 ? '+' : ''}{formatCompact(monthRealStats.totalProjected, currency, hideAmounts)}</span>
+        <div className="animate-fadein">
+          {/* CASH REALITY: spendable money with the cash you have now, after the
+              obligations due before your next paycheck. This is the day-to-day
+              truth — future income is NOT counted here, it's shown below. */}
+          <h2 className="display-font animate-count" style={{
+            fontSize: 42, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1,
+            color: heroPositive ? 'var(--primary)' : 'var(--danger)',
+            marginBottom: 6, fontVariantNumeric: 'tabular-nums',
+          }}>
+            <CountUp value={heroValue} format={(v) => (v >= 0 ? '' : '') + formatMoney(v, currency, hideAmounts)} />
+          </h2>
+          <p style={{ fontSize: 12.5, color: 'var(--text-dim)', letterSpacing: '-0.005em', lineHeight: 1.45 }}>
+            {dailySim.nextIncome
+              ? <>Con tu plata de hoy, después de pagar lo que falta este mes. Tu ingreso de <span style={{ color: 'var(--primary)', fontWeight: 600 }}>{formatCompact(dailySim.nextIncome.amount, currency, hideAmounts)}</span> llega el <span style={{ color: 'var(--text)', fontWeight: 600 }}>{formatDate(dailySim.nextIncome.date)}</span>.</>
+              : <>Con tu plata de hoy, después de pagar lo que falta este mes.</>}
+          </p>
+          {heroValue < 0 && (
+            <p style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 6, lineHeight: 1.4 }}>
+              ⚠ No te alcanza para cubrir todo antes de tu próximo ingreso. Te faltan {formatMoney(-heroValue, currency, hideAmounts)}.
             </p>
+          )}
 
-            {/* Real vs pending breakdown */}
-            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Cash reconciliation */}
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Wallet size={12} color="var(--text-dim)" strokeWidth={2.5} />
+                <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 500 }}>Tienes hoy</span>
+              </div>
+              <span className="tabular" style={{ fontSize: 12.5, fontWeight: 600 }}>{formatCompact(dailySim.realBalanceToday, currency, hideAmounts)}</span>
+            </div>
+            {dailySim.pendingObligations > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <CheckCircle2 size={12} color="var(--primary)" strokeWidth={2.5} />
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 500 }}>Confirmado</span>
+                  <Clock size={12} color="var(--text-muted)" strokeWidth={2.5} />
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 500 }}>Te falta pagar</span>
                 </div>
-                <span className="tabular" style={{ fontSize: 12.5, fontWeight: 600 }}>
-                  <span style={{ color: 'var(--primary)' }}>+{formatCompact(monthRealStats.confirmedIncome, currency, hideAmounts)}</span>
-                  <span style={{ color: 'var(--text-muted)' }}> · </span>
-                  <span style={{ color: 'var(--danger)' }}>−{formatCompact(monthRealStats.confirmedExpense + monthRealStats.confirmedDebt, currency, hideAmounts)}</span>
-                </span>
+                <span className="tabular" style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--danger)' }}>−{formatCompact(dailySim.pendingObligations, currency, hideAmounts)}</span>
               </div>
-              {(monthRealStats.pendingIncome + monthRealStats.pendingExpense + monthRealStats.pendingDebt) > 0 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Clock size={12} color="var(--text-muted)" strokeWidth={2.5} />
-                    <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 500 }}>Pendiente</span>
-                  </div>
-                  <span className="tabular" style={{ fontSize: 12.5, fontWeight: 600 }}>
-                    {monthRealStats.pendingIncome > 0 && <span style={{ color: 'var(--primary)' }}>+{formatCompact(monthRealStats.pendingIncome, currency, hideAmounts)}</span>}
-                    {monthRealStats.pendingIncome > 0 && (monthRealStats.pendingExpense + monthRealStats.pendingDebt) > 0 && <span style={{ color: 'var(--text-muted)' }}> · </span>}
-                    {(monthRealStats.pendingExpense + monthRealStats.pendingDebt) > 0 && <span style={{ color: 'var(--danger)' }}>−{formatCompact(monthRealStats.pendingExpense + monthRealStats.pendingDebt, currency, hideAmounts)}</span>}
-                  </span>
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <>
-            <h2 className="display-font animate-count" style={{
-              fontSize: 42, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1,
-              color: thisMonthFlow >= 0 ? 'var(--primary)' : 'var(--danger)',
-              marginBottom: 6, fontVariantNumeric: 'tabular-nums',
-            }}>
-              <CountUp value={thisMonthFlow} format={(v) => (v >= 0 ? '+' : '') + formatMoney(v, currency, hideAmounts)} />
-            </h2>
-            <p style={{ fontSize: 13, color: 'var(--text-dim)', letterSpacing: '-0.005em' }}>
-              Estimación si pagas todo lo del mes. Confirma cada pago para ver el real.
-            </p>
-          </>
-        )}
+            )}
+          </div>
         </div>
 
         {(futurePositive || lastDebtMonth) && (
@@ -3572,7 +3603,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
       </div>
 
       {/* === CYCLE CHECKLIST: the user's notepad as a living widget === */}
-      <CycleChecklist data={data} currency={currency} hideAmounts={hideAmounts} projection={projection} onConfirm={onConfirm} onConfirmDebt={onConfirmDebt} onConfirmSavings={onConfirmSavings} />
+      <CycleChecklist data={data} currency={currency} hideAmounts={hideAmounts} projection={projection} sim={dailySim} onConfirm={onConfirm} onConfirmDebt={onConfirmDebt} onConfirmSavings={onConfirmSavings} />
 
       {/* === REAL BALANCE TODAY: live cash on hand + day-by-day simulation === */}
       <RealBalanceCard sim={dailySim} savings={data.savings} currency={currency} hideAmounts={hideAmounts} onNavigate={onNavigate} onSetBalance={(amount) => onUpdateSavings && onUpdateSavings({ currentBalance: amount, balanceUpdatedAt: new Date().toISOString() })} />
