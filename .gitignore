@@ -14,3 +14,6 @@ dist
 .idea
 .vscode/*
 !.vscode/settings.json
+
+# test artifacts
+tests/shot-*.png

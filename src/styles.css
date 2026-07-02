@@ -440,8 +440,10 @@
   .sheet-backdrop {
     position: fixed; inset: 0; background: rgba(5,7,14,0.7);
     backdrop-filter: blur(12px) saturate(140%); -webkit-backdrop-filter: blur(12px) saturate(140%);
-    z-index: 50;
+    z-index: 1000;
   }
+  /* Portal host: sits above the whole app; children set their own z-index */
+  .finanzas-portal { position: relative; z-index: 1000; }
   .sheet-handle {
     width: 36px; height: 4px; border-radius: 2px;
     background: var(--border-strong); margin: 8px auto 4px;

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, Fragment } from 'react';
+import { createPortal } from 'react-dom';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import {
   AreaChart, Area, LineChart, Line, BarChart, Bar,
@@ -1941,49 +1942,82 @@ function generateCSV(data) {
 // ============================================================================
 //  PRIMITIVES
 // ============================================================================
+// Renders children into a dedicated node on <body>, escaping the app's nested
+// stacking contexts / overflow:hidden so overlays always sit on top and are
+// never clipped. Applies the current theme attribute so CSS variables resolve.
+function Portal({ children }) {
+  const elRef = useRef(null);
+  if (!elRef.current && typeof document !== 'undefined') {
+    elRef.current = document.createElement('div');
+    elRef.current.className = 'finanzas-portal';
+  }
+  useEffect(() => {
+    const el = elRef.current;
+    if (!el) return;
+    document.body.appendChild(el);
+    return () => { if (el.parentNode) el.parentNode.removeChild(el); };
+  }, []);
+  if (!elRef.current) return null;
+  return createPortal(children, elRef.current);
+}
+
 function Sheet({ open, onClose, title, children, size = 'md' }) {
   useEffect(() => {
     if (open) { document.body.style.overflow = 'hidden'; return () => { document.body.style.overflow = ''; }; }
   }, [open]);
   if (!open) return null;
+  // On wide screens the sheet becomes a centered modal card; on phones it's a
+  // bottom sheet. Both are portaled to body so nothing clips them.
+  const isWide = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(min-width: 1024px)').matches;
   const heights = { sm: '50vh', md: '85vh', lg: '92vh', auto: 'auto' };
+  const bodyMaxH = isWide ? 'calc(88vh - 64px)' : `calc(${heights[size] === 'auto' ? '85vh' : heights[size]} - 60px)`;
   return (
-    <>
+    <Portal>
       <div className="sheet-backdrop animate-fadein" onClick={onClose} />
-      <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 50, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
-        <div className="animate-sheet" style={{
-          width: '100%', maxWidth: '480px',
+      <div style={{
+        position: 'fixed', inset: 0, zIndex: 1001,
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: isWide ? 'center' : 'flex-end',
+        padding: isWide ? 24 : 0,
+        pointerEvents: 'none',
+      }}>
+        <div className={isWide ? 'animate-scale' : 'animate-sheet'} style={{
+          width: '100%', maxWidth: isWide ? 560 : 480,
           background: 'var(--bg-2)',
-          borderTopLeftRadius: 28, borderTopRightRadius: 28,
-          maxHeight: heights[size], paddingBottom: 'env(safe-area-inset-bottom)',
-          borderTop: '1px solid var(--border-strong)',
-          boxShadow: '0 -24px 60px rgba(0,0,0,0.6), 0 -1px 0 rgba(255,255,255,0.04) inset',
+          borderRadius: isWide ? 24 : '28px 28px 0 0',
+          maxHeight: isWide ? '88vh' : heights[size],
+          paddingBottom: isWide ? 0 : 'env(safe-area-inset-bottom)',
+          border: isWide ? '1px solid var(--border-strong)' : 'none',
+          borderTop: isWide ? undefined : '1px solid var(--border-strong)',
+          boxShadow: '0 24px 70px rgba(0,0,0,0.6)',
           pointerEvents: 'auto',
+          display: 'flex', flexDirection: 'column',
         }}>
-          <div className="sheet-handle" />
+          {!isWide && <div className="sheet-handle" />}
           {title && (
-            <div className="flex items-center justify-between" style={{ padding: '8px 20px 12px' }}>
+            <div className="flex items-center justify-between" style={{ padding: isWide ? '18px 22px 12px' : '8px 20px 12px', flexShrink: 0 }}>
               <h3 className="display-font" style={{ fontSize: 22, fontWeight: 500, letterSpacing: '-0.025em' }}>{title}</h3>
               <button onClick={onClose} className="btn-ghost flex items-center justify-center" style={{ width: 36, height: 36, borderRadius: '50%' }}>
                 <X size={16} />
               </button>
             </div>
           )}
-          <div className="overflow-y-auto no-scrollbar" style={{ padding: '0 20px 20px', maxHeight: 'calc(85vh - 60px)' }}>
+          <div className="overflow-y-auto no-scrollbar" style={{ padding: isWide ? '0 22px 22px' : '0 20px 20px', maxHeight: bodyMaxH }}>
             {children}
           </div>
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 
 function ConfirmDialog({ open, title, message, onConfirm, onCancel, danger = false }) {
   if (!open) return null;
   return (
-    <>
-      <div className="sheet-backdrop animate-fadein" onClick={onCancel} style={{ zIndex: 70 }} />
-      <div className="fixed inset-0 flex items-center justify-center px-6 pointer-events-none" style={{ zIndex: 71 }}>
+    <Portal>
+      <div className="sheet-backdrop animate-fadein" onClick={onCancel} style={{ zIndex: 1100 }} />
+      <div className="fixed inset-0 flex items-center justify-center px-6 pointer-events-none" style={{ zIndex: 1101 }}>
         <div className="w-full max-w-sm rounded-3xl p-6 animate-scale pointer-events-auto" style={{ background: 'var(--bg-2)', border: '1px solid var(--border-strong)', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
           <div className="flex items-center gap-3 mb-3">
             <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: danger ? 'var(--danger-glow)' : 'var(--primary-glow)' }}>
@@ -1998,7 +2032,7 @@ function ConfirmDialog({ open, title, message, onConfirm, onCancel, danger = fal
           </div>
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 
@@ -2015,22 +2049,24 @@ function Toast({ message, onClose }) {
   const color = isDanger ? 'var(--danger)' : (isWarn ? 'var(--warning)' : 'var(--primary)');
   const bg = isDanger ? 'var(--danger-glow)' : (isWarn ? 'var(--warning-glow)' : 'var(--primary-glow)');
   return (
-    <div className="fixed left-1/2 z-[80] animate-toast-slide" style={{ top: 'max(16px, env(safe-area-inset-top))', transform: 'translateX(-50%)' }}>
-      <div style={{
-        padding: '10px 16px', borderRadius: 999,
-        display: 'flex', alignItems: 'center', gap: 8,
-        fontSize: 13, fontWeight: 500, letterSpacing: '-0.005em',
-        background: 'var(--surface-2)',
-        border: `1px solid ${color}55`,
-        boxShadow: `0 12px 32px rgba(0,0,0,0.4), 0 0 0 1px ${bg}`,
-        color: 'var(--text)',
-      }}>
-        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <Icon size={15} color={color} strokeWidth={2.5} />
-        </span>
-        <span>{message}</span>
+    <Portal>
+      <div className="fixed left-1/2 animate-toast-slide" style={{ top: 'max(16px, env(safe-area-inset-top))', transform: 'translateX(-50%)', zIndex: 1200 }}>
+        <div style={{
+          padding: '10px 16px', borderRadius: 999,
+          display: 'flex', alignItems: 'center', gap: 8,
+          fontSize: 13, fontWeight: 500, letterSpacing: '-0.005em',
+          background: 'var(--surface-2)',
+          border: `1px solid ${color}55`,
+          boxShadow: `0 12px 32px rgba(0,0,0,0.4), 0 0 0 1px ${bg}`,
+          color: 'var(--text)',
+        }}>
+          <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon size={15} color={color} strokeWidth={2.5} />
+          </span>
+          <span>{message}</span>
+        </div>
       </div>
-    </div>
+    </Portal>
   );
 }
 
