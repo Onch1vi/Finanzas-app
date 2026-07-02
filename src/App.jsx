@@ -3475,9 +3475,11 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
 
   const hasData = debts.length > 0 || incomes.length > 0 || expenses.length > 0;
 
-  // Hero headline = spendable cash until the next paycheck (day-to-day reality)
+  // Hero big number = how the month ENDS (cash today + income − payments).
+  // Secondary "para gastar ahora" = spendable until the next paycheck.
+  const monthEndValue = dailySim.endOfMonthBalance;
   const heroValue = dailySim.availableUntilIncome;
-  const heroPositive = heroValue >= 0;
+  const heroPositive = monthEndValue >= 0;
   return (
     <div className="px-5 pb-32 space-y-4 stagger">
       <div className="animate-slideup card-hero" style={{
@@ -3501,7 +3503,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
               boxShadow: `0 0 10px ${heroPositive ? 'var(--primary)' : 'var(--danger)'}`,
             }} />
             <p style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
-              Te queda para gastar
+              Proyección del mes
             </p>
           </div>
           {dailySim.confirmedCount > 0 && (
@@ -3510,29 +3512,22 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
         </div>
 
         <div className="animate-fadein">
-          {/* CASH REALITY: spendable money with the cash you have now, after the
-              obligations due before your next paycheck. This is the day-to-day
-              truth — future income is NOT counted here, it's shown below. */}
+          {/* MONTH PROJECTION: how the month ENDS = cash today + income when it
+              arrives − everything you pay this month. Same number as "Tu plata
+              hoy → al cierre de mes". The spendable-now figure is shown below. */}
           <h2 className="display-font animate-count" style={{
             fontSize: 42, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1,
             color: heroPositive ? 'var(--primary)' : 'var(--danger)',
             marginBottom: 6, fontVariantNumeric: 'tabular-nums',
           }}>
-            <CountUp value={heroValue} format={(v) => (v >= 0 ? '' : '') + formatMoney(v, currency, hideAmounts)} />
+            <CountUp value={monthEndValue} format={(v) => formatMoney(v, currency, hideAmounts)} />
           </h2>
           <p style={{ fontSize: 12.5, color: 'var(--text-dim)', letterSpacing: '-0.005em', lineHeight: 1.45 }}>
-            {dailySim.nextIncome
-              ? <>Con tu plata de hoy, después de pagar lo que falta este mes. Tu ingreso de <span style={{ color: 'var(--primary)', fontWeight: 600 }}>{formatCompact(dailySim.nextIncome.amount, currency, hideAmounts)}</span> llega el <span style={{ color: 'var(--text)', fontWeight: 600 }}>{formatDate(dailySim.nextIncome.date)}</span>.</>
-              : <>Con tu plata de hoy, después de pagar lo que falta este mes.</>}
+            Así terminarás {new Date().toLocaleDateString('es-CO', { month: 'long' })}: tu plata de hoy, más lo que entra, menos lo que pagas.
           </p>
-          {heroValue < 0 && (
-            <p style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 6, lineHeight: 1.4 }}>
-              ⚠ No te alcanza para cubrir todo antes de tu próximo ingreso. Te faltan {formatMoney(-heroValue, currency, hideAmounts)}.
-            </p>
-          )}
 
-          {/* Cash reconciliation */}
-          <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Path to end-of-month */}
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: 9 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <Wallet size={12} color="var(--text-dim)" strokeWidth={2.5} />
@@ -3540,16 +3535,41 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
               </div>
               <span className="tabular" style={{ fontSize: 12.5, fontWeight: 600 }}>{formatCompact(dailySim.realBalanceToday, currency, hideAmounts)}</span>
             </div>
+            {dailySim.nextIncome && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <ArrowUp size={12} color="var(--primary)" strokeWidth={2.5} />
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 500 }}>Entra {formatDate(dailySim.nextIncome.date)}</span>
+                </div>
+                <span className="tabular" style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--primary)' }}>+{formatCompact(dailySim.pendingIncome, currency, hideAmounts)}</span>
+              </div>
+            )}
             {dailySim.pendingObligations > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Clock size={12} color="var(--text-muted)" strokeWidth={2.5} />
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 500 }}>Te falta pagar</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 500 }}>Pagas este mes</span>
                 </div>
                 <span className="tabular" style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--danger)' }}>−{formatCompact(dailySim.pendingObligations, currency, hideAmounts)}</span>
               </div>
             )}
           </div>
+
+          {/* Spendable RIGHT NOW (until payday) — the day-to-day number */}
+          <div className="rounded-xl" style={{ marginTop: 14, padding: '12px 14px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <p style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 600 }}>Para gastar ahora</p>
+              <p style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>{dailySim.nextIncome ? 'hasta tu próximo ingreso' : 'este mes'}</p>
+            </div>
+            <span className="display-font tabular" style={{ fontSize: 20, fontWeight: 600, color: heroValue >= 0 ? 'var(--primary)' : 'var(--danger)' }}>
+              {formatMoney(heroValue, currency, hideAmounts)}
+            </span>
+          </div>
+          {heroValue < 0 && (
+            <p style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 8, lineHeight: 1.4 }}>
+              ⚠ No te alcanza para cubrir todo antes de tu próximo ingreso. Te faltan {formatMoney(-heroValue, currency, hideAmounts)}.
+            </p>
+          )}
         </div>
 
         {(futurePositive || lastDebtMonth) && (
