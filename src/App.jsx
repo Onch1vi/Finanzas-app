@@ -1516,7 +1516,11 @@ function buildFinancialAdvice(data, currency) {
   const formalSavings = (data.savings && data.savings.current) || 0;
   const totalLiquid = cashOnHand + formalSavings;
   const emergencyMonths = (data.savings && data.savings.emergencyMonths) || 3;
-  const emergencyTarget = monthlyExpense * emergencyMonths;
+  // Emergency fund covers your real monthly cost of living = fixed expenses PLUS
+  // recurring bill/debt minimums. Using expenses-only broke when the user files
+  // rent/utilities as "debts" (target would be $0).
+  const monthlyLivingCost = monthlyExpense + monthlyDebtMin;
+  const emergencyTarget = monthlyLivingCost * emergencyMonths;
   const goal = (data.savings && data.savings.goal) || 0;
   const goalDate = data.savings && data.savings.goalDate ? parseLocalDate(data.savings.goalDate) : null;
   const lifeBudgetPct = (data.savings && data.savings.lifeBudgetPct) || 0.15;
@@ -1719,7 +1723,7 @@ function buildFinancialAdvice(data, currency) {
   }
 
   // Step 3: Build emergency fund
-  if (totalLiquid < emergencyTarget && monthlyExpense > 0) {
+  if (totalLiquid < emergencyTarget && monthlyLivingCost > 0) {
     const gap = emergencyTarget - totalLiquid;
     const monthlyContrib = surplus > 0 ? Math.min(surplus * 0.4, gap / 4) : 0;
     const monthsNeeded = monthlyContrib > 0 ? Math.ceil(gap / monthlyContrib) : null;
@@ -1727,7 +1731,7 @@ function buildFinancialAdvice(data, currency) {
     out.steps.push({
       n: out.steps.length + 1, icon: '🛟', priority: 'high', color: 'var(--warning)',
       title: 'Construye tu colchón de emergencia',
-      action: `Necesitas ${formatMoney(emergencyTarget, currency)} (= ${emergencyMonths} meses de tus gastos) · te faltan ${formatMoney(gap, currency)}`,
+      action: `Necesitas ${formatMoney(emergencyTarget, currency)} (= ${emergencyMonths} meses de tu costo de vida) · te faltan ${formatMoney(gap, currency)}`,
       how: monthlyContrib > 0
         ? `Aporta ${formatMoney(monthlyContrib, currency)}/mes a una cuenta de ahorros SEPARADA (no la del día a día). En ${monthsNeeded} meses lo logras — ${targetDate ? formatDate(targetDate) : ''}. Abre la cuenta hoy: Nu, Bancolombia Ahorro a la Mano, Rappipay o cualquier banco digital.`
         : `Sin excedente positivo, primero corta gastos. Luego destina al colchón el 40% de cualquier excedente que generes.`,
@@ -1775,7 +1779,7 @@ function buildFinancialAdvice(data, currency) {
   }
 
   // Step 6: Invest excess
-  if (totalLiquid >= emergencyTarget && (!out.debtStrategy || out.debtStrategy.plan.every(p => (p.debt.interestRate || 0) < 10)) && surplus > monthlyExpense * 0.2) {
+  if (totalLiquid >= emergencyTarget && (!out.debtStrategy || out.debtStrategy.plan.every(p => (p.debt.interestRate || 0) < 10)) && surplus > monthlyLivingCost * 0.2) {
     const invest = Math.round(surplus * 0.3);
     out.steps.push({
       n: out.steps.length + 1, icon: '📈', priority: 'low', color: 'var(--primary)',
@@ -3246,9 +3250,9 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
     const highInterestDebts = activeDebts.filter(d => (d.interestRate || 0) >= 20);
     return buildSmartAllocation(projection, {
       ...data.savings,
-      emergencyTarget: monthlyExpense * (data.savings.emergencyMonths || 3),
+      emergencyTarget: (monthlyExpense + monthlyDebtPayment) * (data.savings.emergencyMonths || 3),
     }, { highInterestDebts });
-  }, [projection, data.savings, monthlyExpense, debts]);
+  }, [projection, data.savings, monthlyExpense, monthlyDebtPayment, debts]);
 
   // Plan-level allocation
   const planAllocations = useMemo(() => {
@@ -3637,10 +3641,10 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
       {/* === KEY DATES: when goal reached, when debt-free, when stable === */}
       <KeyDatesCard goalReachDate={goalReachDate} debtFreeDate={debtFreeDate} dailySim={dailySim} savings={data.savings} currency={currency} hideAmounts={hideAmounts} />
 
-      {/* This month's plan: how to split the surplus */}
-      {projection[0] && projection[0].cashFlow > 0 && (
+      {/* This month's plan: how to split the CASH actually available now */}
+      {dailySim.availableUntilIncome > 0 && (
         <div className="animate-slideup">
-          <MonthAllocationPlan allocatedProjection={allocatedProjection} planMonthlyView={planAllocations.monthlyView} savings={data.savings} currency={currency} hideAmounts={hideAmounts} />
+          <MonthAllocationPlan availableNow={dailySim.availableUntilIncome} savings={data.savings} currency={currency} hideAmounts={hideAmounts} monthLabel={new Date().toLocaleDateString('es-CO', { month: 'long', year: 'numeric' })} />
         </div>
       )}
 
@@ -4830,6 +4834,7 @@ function PlanesScreen({ data, currency, hideAmounts, onUpdateSavings, onSavePlan
   const [creatingPlan, setCreatingPlan] = useState(false);
   const [savingsSheet, setSavingsSheet] = useState(false);
   const [expandedMonth, setExpandedMonth] = useState(null);
+  const dailySim = useMemo(() => simulateMonthDaily(data), [data]);
 
   const monthlyIncome = incomes.filter(i => i.active).reduce((s,i) => s+getMonthlyEquivalent(i), 0);
   const monthlyExpense = expenses.filter(e => e.active).reduce((s,e) => s+getMonthlyEquivalent(e), 0);
@@ -4837,6 +4842,8 @@ function PlanesScreen({ data, currency, hideAmounts, onUpdateSavings, onSavePlan
   const monthlyDebtPayment = activeDebts.reduce((s,d) => s+(d.minimumPayment||0), 0);
   const totalDebtRemaining = activeDebts.reduce((s,d) => s+(d.totalAmount-(d.paidAmount||0)), 0);
   const monthlyNet = monthlyIncome - monthlyExpense - monthlyDebtPayment;
+  // Real monthly cost of living = fixed expenses + recurring bill/debt minimums
+  const monthlyLivingCost = monthlyExpense + monthlyDebtPayment;
 
   // The dynamic projection - month by month, knowing each debt's end date
   const projection = useMemo(() => buildMonthlyProjection(data, 24), [data]);
@@ -4846,7 +4853,7 @@ function PlanesScreen({ data, currency, hideAmounts, onUpdateSavings, onSavePlan
     const highInterestDebts = activeDebts.filter(d => (d.interestRate || 0) >= 20);
     return buildSmartAllocation(projection, {
       ...data.savings,
-      emergencyTarget: monthlyExpense * (data.savings.emergencyMonths || 3),
+      emergencyTarget: monthlyLivingCost * (data.savings.emergencyMonths || 3),
     }, { highInterestDebts });
   }, [projection, data.savings, monthlyExpense, activeDebts]);
 
@@ -4881,7 +4888,7 @@ function PlanesScreen({ data, currency, hideAmounts, onUpdateSavings, onSavePlan
     return allPaid;
   }, [projection]);
 
-  const emergencyTarget = monthlyExpense * (data.savings.emergencyMonths || 3);
+  const emergencyTarget = monthlyLivingCost * (data.savings.emergencyMonths || 3);
   const emergencyProgress = emergencyTarget > 0 ? Math.min(100, ((data.savings.current || 0) / emergencyTarget) * 100) : 0;
   const goalProgress = data.savings.goal > 0 ? Math.min(100, ((data.savings.current || 0) / data.savings.goal) * 100) : 0;
 
@@ -4979,10 +4986,10 @@ function PlanesScreen({ data, currency, hideAmounts, onUpdateSavings, onSavePlan
       {/* Smart negative flow advisor (only if negative AND won't fix itself) */}
       {currentMonthIsNegative && !futureBetters && <div className="animate-slideup"><NegativeFlowAdvisor data={data} projection={projection} currency={currency} hideAmounts={hideAmounts} /></div>}
 
-      {/* This month's intelligent allocation plan */}
-      {hasData && projection[0] && projection[0].cashFlow > 0 && (
+      {/* This month's intelligent allocation plan (based on real available cash) */}
+      {hasData && dailySim.availableUntilIncome > 0 && (
         <div className="animate-slideup">
-          <MonthAllocationPlan allocatedProjection={allocatedProjection} planMonthlyView={planAllocations.monthlyView} savings={data.savings} currency={currency} hideAmounts={hideAmounts} />
+          <MonthAllocationPlan availableNow={dailySim.availableUntilIncome} savings={data.savings} currency={currency} hideAmounts={hideAmounts} monthLabel={new Date().toLocaleDateString('es-CO', { month: 'long', year: 'numeric' })} />
         </div>
       )}
 
@@ -5168,10 +5175,10 @@ function PlanesScreen({ data, currency, hideAmounts, onUpdateSavings, onSavePlan
           <h3 className="display-font text-base font-semibold mb-1">Cómo crecerán tus ahorros</h3>
           <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>Considera primas, gastos anuales y deudas que terminan</p>
           <ResponsiveContainer width="100%" height={180}>
-            <AreaChart data={projection24.map(m => ({ name: m.label, ahorro: Math.round(m.cumulativeSavings), deuda: Math.round(m.debtsOutstanding) }))} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+            <AreaChart data={projection24.map(m => ({ name: (m.label || '').replace(' de ', ' '), ahorro: Math.round(m.cumulativeSavings), deuda: Math.round(m.debtsOutstanding) }))} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
               <defs><linearGradient id="g1p" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#34D399" stopOpacity={0.5} /><stop offset="100%" stopColor="#34D399" stopOpacity={0} /></linearGradient></defs>
-              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#5C6788' }} interval={1} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#5C6788' }} tickFormatter={v => formatCompact(v, currency)} />
+              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#5C6788' }} interval="preserveStartEnd" minTickGap={44} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#5C6788' }} width={48} tickFormatter={v => formatCompact(v, currency)} />
               <Tooltip contentStyle={{ background: '#1C2440', border: '1px solid #232E4D', borderRadius: 12, fontSize: 12 }} formatter={v => formatMoney(v, currency)} />
               <Area type="monotone" dataKey="ahorro" name="Ahorros" stroke="#34D399" strokeWidth={2} fill="url(#g1p)" />
             </AreaChart>
@@ -5801,58 +5808,70 @@ function PlansFundingSummary({ planAllocations, currency, hideAmounts }) {
   );
 }
 
-function MonthAllocationPlan({ allocatedProjection, planMonthlyView, savings, currency, hideAmounts }) {
-  if (!allocatedProjection || !allocatedProjection.length) return null;
-  const m = allocatedProjection[0];
-  if (!m.allocation) return null;
-  const a = m.allocation;
-  const totalFlow = m.cashFlow;
-  const isPositive = totalFlow > 0;
-  const thisMonthPlanView = (planMonthlyView && planMonthlyView[0]) ? planMonthlyView[0] : null;
-  const perPlan = thisMonthPlanView ? thisMonthPlanView.perPlan : [];
+// Distributes the CASH the user actually has available this month (not the
+// abstract monthly flow). "availableNow" = simulateMonthDaily().availableUntilIncome
+// = cash today − obligations due before the next paycheck. So the suggested
+// amounts can never exceed what you really have — consistent with every other card.
+function MonthAllocationPlan({ availableNow, savings, currency, hideAmounts, monthLabel }) {
+  const avail = Math.round(availableNow || 0);
+  const lifeBudgetPct = savings && savings.lifeBudgetPct != null ? savings.lifeBudgetPct : 0.15;
+  const bufferPct = savings && savings.bufferPct != null ? savings.bufferPct : 0.10;
+  const minLifeBudget = (savings && savings.minLifeBudget) || 0;
+
+  const header = (
+    <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center gap-2">
+        <div style={{ width: 28, height: 28, borderRadius: 8, background: 'rgba(167,139,250,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Sparkles size={13} color="var(--accent)" strokeWidth={2.4} />
+        </div>
+        <div>
+          <h4 className="display-font" style={{ fontSize: 16, fontWeight: 500, letterSpacing: '-0.02em', lineHeight: 1.1 }}>Plan de este mes</h4>
+          {monthLabel && <p style={{ fontSize: 10.5, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500, marginTop: 2 }}>{monthLabel}</p>}
+        </div>
+      </div>
+    </div>
+  );
+
+  // Nothing free to distribute → be honest instead of showing fake amounts.
+  if (avail <= 0) {
+    return (
+      <div className="card-elevated" style={{ padding: 18 }}>
+        {header}
+        <p style={{ fontSize: 12.5, color: 'var(--text-dim)', lineHeight: 1.55 }}>
+          Con tu plata de hoy y lo que falta por pagar, <strong style={{ color: 'var(--danger)' }}>no te queda excedente para repartir</strong> hasta tu próximo ingreso. Enfócate en cubrir lo esencial; cuando entre tu sueldo, vuelve para planear.
+        </p>
+      </div>
+    );
+  }
+
+  // Split the available cash: life first (never cut), then buffer, then savings.
+  let lifeMoney = Math.min(avail, Math.max(minLifeBudget, Math.round(avail * lifeBudgetPct)));
+  let remaining = avail - lifeMoney;
+  let buffer = Math.round(remaining * bufferPct);
+  remaining -= buffer;
+  let savingsContribution = remaining;
 
   const blocks = [];
-  if (a.lifeMoney > 0) blocks.push({ label: 'Para vivir', amount: a.lifeMoney, color: 'var(--accent)', icon: Heart, desc: 'Salidas, comida fuera, hobbies, antojos. Es tuyo, gástalo.' });
-  if (a.buffer > 0) blocks.push({ label: 'Reserva imprevistos', amount: a.buffer, color: 'var(--warning)', icon: AlertCircle, desc: 'Para gastos inesperados (médico, reparaciones). Va a tu fondo de emergencia.' });
-  if (a.savingsContribution > 0) blocks.push({
-    label: 'A tus ahorros y planes', amount: a.savingsContribution, color: 'var(--primary)', icon: Target,
-    desc: perPlan.length > 0 ? `Distribuido entre ${perPlan.length} plan${perPlan.length > 1 ? 'es' : ''} (ver detalle abajo)` : (savings.goal > 0 ? `Va a tu meta de ${formatCompact(savings.goal, currency, hideAmounts)}` : 'Ahorro libre (sin meta definida)'),
-    perPlan,
+  if (lifeMoney > 0) blocks.push({ label: 'Para vivir', amount: lifeMoney, color: 'var(--accent)', icon: Heart, desc: 'Salidas, comida fuera, hobbies, antojos. Es tuyo, gástalo.' });
+  if (buffer > 0) blocks.push({ label: 'Reserva imprevistos', amount: buffer, color: 'var(--warning)', icon: AlertCircle, desc: 'Para gastos inesperados (médico, reparaciones). Va a tu fondo de emergencia.' });
+  if (savingsContribution > 0) blocks.push({
+    label: 'A tus ahorros', amount: savingsContribution, color: 'var(--primary)', icon: Target,
+    desc: (savings && savings.goal > 0) ? `Va a tu meta de ${formatCompact(savings.goal, currency, hideAmounts)}` : 'Ahorro libre (sin meta definida)',
   });
-  if (a.debtExtra > 0) blocks.push({ label: 'Pago extra de deuda', amount: a.debtExtra, color: 'var(--danger)', icon: CreditCard, desc: 'Acelera pagar deudas con interés alto' });
-  if (a.deficit > 0) blocks.push({ label: 'Faltante', amount: a.deficit, color: 'var(--danger)', icon: AlertCircle, desc: 'Tu flujo es negativo este mes' });
 
   return (
     <div className="card-elevated" style={{ padding: 18 }}>
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <div style={{
-            width: 28, height: 28, borderRadius: 8,
-            background: 'rgba(167,139,250,0.15)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Sparkles size={13} color="var(--accent)" strokeWidth={2.4} />
-          </div>
-          <div>
-            <h4 className="display-font" style={{ fontSize: 16, fontWeight: 500, letterSpacing: '-0.02em', lineHeight: 1.1 }}>Plan de este mes</h4>
-            <p style={{ fontSize: 10.5, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500, marginTop: 2 }}>{m.fullLabel}</p>
-          </div>
-        </div>
-      </div>
-
+      {header}
       <p style={{ fontSize: 12.5, color: 'var(--text-dim)', lineHeight: 1.55, marginBottom: 14 }}>
-        Después de gastos fijos, deudas y planes, te quedan <strong className="tabular" style={{ color: isPositive ? 'var(--primary)' : 'var(--danger)', fontWeight: 600 }}>{isPositive ? '+' : ''}{formatMoney(totalFlow, currency, hideAmounts)}</strong> libres. Distribuidos así:
+        De los <strong className="tabular" style={{ color: 'var(--primary)', fontWeight: 600 }}>{formatMoney(avail, currency, hideAmounts)}</strong> que te quedan para gastar este mes, te sugiero repartir así:
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {blocks.map((b, i) => {
-          const pct = totalFlow !== 0 ? Math.abs(b.amount / totalFlow * 100) : 0;
+          const pct = avail !== 0 ? Math.abs(b.amount / avail * 100) : 0;
           const Icon = b.icon;
           return (
-            <div key={i} style={{
-              padding: 12, borderRadius: 14,
-              background: 'var(--bg-2)', border: `1px solid ${b.color}26`,
-            }}>
+            <div key={i} style={{ padding: 12, borderRadius: 14, background: 'var(--bg-2)', border: `1px solid ${b.color}26` }}>
               <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
                 <div className="flex items-center gap-2">
                   <div style={{ width: 28, height: 28, borderRadius: 8, background: `${b.color}1A`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -5864,44 +5883,18 @@ function MonthAllocationPlan({ allocatedProjection, planMonthlyView, savings, cu
               </div>
               <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.4 }}>{b.desc}</p>
               <div style={{ width: '100%', height: 4, background: 'var(--surface-2)', borderRadius: 999, overflow: 'hidden' }}>
-                <div style={{
-                  width: `${Math.min(100, pct)}%`, height: '100%',
-                  background: `linear-gradient(90deg, ${b.color}99, ${b.color})`,
-                  transition: 'width 0.8s var(--ease-out)',
-                }} />
+                <div style={{ width: `${Math.min(100, pct)}%`, height: '100%', background: `linear-gradient(90deg, ${b.color}99, ${b.color})`, transition: 'width 0.8s var(--ease-out)' }} />
               </div>
-              {b.perPlan && b.perPlan.length > 0 && (
-                <div style={{ marginTop: 10, paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px dashed var(--border-soft)' }}>
-                  {b.perPlan.map((p, pi) => (
-                    <div key={pi} className="flex items-center justify-between gap-2" style={{ fontSize: 11 }}>
-                      <span className="flex items-center gap-1.5 min-w-0" style={{ color: 'var(--text-dim)' }}>
-                        <span style={{ width: 5, height: 5, borderRadius: 999, background: p.name === 'Meta general' ? 'var(--primary)' : 'var(--accent)', flexShrink: 0 }} />
-                        <span className="truncate">{p.name}</span>
-                        {p.targetDate && <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}> · {formatDateShort(p.targetDate)}</span>}
-                      </span>
-                      <span className="tabular flex-shrink-0" style={{ fontWeight: 600, color: 'var(--primary)' }}>+{formatCompact(p.amount, currency, hideAmounts)}</span>
-                    </div>
-                  ))}
-                  {thisMonthPlanView && thisMonthPlanView.unallocated > 0 && (
-                    <div className="flex items-center justify-between" style={{ fontSize: 11 }}>
-                      <span style={{ color: 'var(--text-muted)' }}>Sin asignar</span>
-                      <span className="tabular" style={{ fontWeight: 600, color: 'var(--text-dim)' }}>+{formatCompact(thisMonthPlanView.unallocated, currency, hideAmounts)}</span>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           );
         })}
       </div>
 
-      {a.lifeMoney > 0 && (
-        <div className="rounded-xl p-3" style={{ background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.2)' }}>
-          <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-            <strong style={{ color: 'var(--accent)' }}>Importante:</strong> el dinero "para vivir" es tuyo, gástalo en lo que disfrutes. La app no te lo recortará por más metas grandes que tengas — porque ahorrar privándote no funciona.
-          </p>
-        </div>
-      )}
+      <div className="rounded-xl p-3" style={{ marginTop: 12, background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.2)' }}>
+        <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+          <strong style={{ color: 'var(--accent)' }}>Importante:</strong> el dinero "para vivir" es tuyo, gástalo en lo que disfrutes. Cuando entre tu sueldo tendrás más margen para ahorrar.
+        </p>
+      </div>
     </div>
   );
 }
