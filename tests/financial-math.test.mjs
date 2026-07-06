@@ -115,8 +115,16 @@ function simulateMonthDaily(data, today = new Date()) {
     events.push({ date: new Date(t.getFullYear(), t.getMonth(), day), amount: -due, name: d.name, key, confirmed: !!confirms[key] });
   });
 
+  // Confirmation-ledger based (matches app): sum confirmed movements, not events
+  const balanceUpdatedAt = (data.savings && data.savings.balanceUpdatedAt) || '';
   let realBalanceToday = startingCash;
-  events.forEach(ev => { if (ev.confirmed) realBalanceToday += ev.amount; });
+  Object.entries(confirms).forEach(([key, c]) => {
+    if (!c) return;
+    if (balanceUpdatedAt && c.confirmedAt && c.confirmedAt < balanceUpdatedAt) return;
+    const amt = (c.appliedAmount != null ? c.appliedAmount : c.amount) || 0;
+    if (key.startsWith('inc-')) realBalanceToday += amt;
+    else realBalanceToday -= amt;
+  });
 
   const overdue = events.filter(ev => !ev.confirmed && ev.date < t);
   const future = events.filter(ev => !ev.confirmed && ev.date >= t).sort((a,b) => a.date - b.date);
@@ -401,6 +409,76 @@ test('Runway: no income this month → available = end of month (all outflow)', 
   const data = { savings:{currentBalance:1000000}, incomes:[], expenses:[], debts:[{id:'x',name:'D',totalAmount:300000,paidAmount:0,minimumPayment:300000,interestRate:0,paymentDay:10,archived:false}], confirmations:{} };
   const sim = simulateMonthDaily(data, new Date(2026,6,2));
   assert.equal(sim.availableUntilIncome, 700000);
+});
+
+
+// ---------- confirmation-based cash (the reported bug) ----------
+test('Paid-off debt (confirmed) STILL reduces cash — debt drops out of events', () => {
+  const data = {
+    savings: { currentBalance: 2200000, balanceUpdatedAt: '2026-07-01T08:00:00.000Z' },
+    incomes: [], expenses: [],
+    debts: [{ id:'d1', name:'Tarjeta', totalAmount:981507, paidAmount:981507, minimumPayment:981507, interestRate:0, paymentDay:5, archived:false }],
+    confirmations: { '2026-07': { 'debt-d1-2026-07': { confirmedAt:'2026-07-05T10:00:00.000Z', amount:981507, appliedAmount:981507, debtId:'d1' } } },
+  };
+  const sim = simulateMonthDaily(data, new Date(2026,6,10));
+  assert.equal(sim.realBalanceToday, 1218493, 'cash drops by the paid amount even though debt is gone from events');
+});
+
+test('Two confirmed payments stack: 2.2M - 981507 - 780000 = 438493', () => {
+  const data = {
+    savings: { currentBalance: 2200000, balanceUpdatedAt: '2026-07-01T08:00:00.000Z' },
+    incomes: [], expenses: [],
+    debts: [
+      { id:'d1', name:'A', totalAmount:981507, paidAmount:981507, minimumPayment:981507, interestRate:0, paymentDay:5, archived:false },
+      { id:'d2', name:'B', totalAmount:780000, paidAmount:780000, minimumPayment:780000, interestRate:0, paymentDay:8, archived:false },
+    ],
+    confirmations: { '2026-07': {
+      'debt-d1-2026-07': { confirmedAt:'2026-07-05T10:00:00.000Z', amount:981507, appliedAmount:981507, debtId:'d1' },
+      'debt-d2-2026-07': { confirmedAt:'2026-07-08T10:00:00.000Z', amount:780000, appliedAmount:780000, debtId:'d2' },
+    } },
+  };
+  const sim = simulateMonthDaily(data, new Date(2026,6,10));
+  assert.equal(sim.realBalanceToday, 438493);
+});
+
+test('Confirmation before balanceUpdatedAt is NOT recounted (baked into declared balance)', () => {
+  const data = {
+    savings: { currentBalance: 2200000, balanceUpdatedAt: '2026-07-10T08:00:00.000Z' },
+    incomes: [], expenses: [],
+    debts: [{ id:'d1', name:'A', totalAmount:981507, paidAmount:981507, minimumPayment:981507, interestRate:0, paymentDay:5, archived:false }],
+    confirmations: { '2026-07': { 'debt-d1-2026-07': { confirmedAt:'2026-07-05T10:00:00.000Z', amount:981507, appliedAmount:981507, debtId:'d1' } } },
+  };
+  const sim = simulateMonthDaily(data, new Date(2026,6,12));
+  assert.equal(sim.realBalanceToday, 2200000);
+});
+
+test('Confirmed income raises cash', () => {
+  const data = {
+    savings: { currentBalance: 1000000, balanceUpdatedAt: '2026-07-01T08:00:00.000Z' },
+    incomes: [{ id:'x', name:'Venta', amount:500000, active:true, frequency:'monthly', dayOfMonth:3 }], expenses:[], debts:[],
+    confirmations: { '2026-07': { 'inc-x-2026-07': { confirmedAt:'2026-07-03T10:00:00.000Z', amount:500000, name:'Venta' } } },
+  };
+  const sim = simulateMonthDaily(data, new Date(2026,6,5));
+  assert.equal(sim.realBalanceToday, 1500000);
+});
+
+// ---------- long-term loan payoff ----------
+test('Long-term loan: 12M at 24%/yr, min 600k/mo → many months, interest accrues, ends at 0', () => {
+  const debt = { id:'L', name:'Carro', totalAmount:12000000, paidAmount:0, minimumPayment:600000, interestRate:24, paymentDay:10 };
+  const sched = simulateDebtPayoff(debt, new Date(2026,6,1));
+  assert.ok(!sched._infeasible, 'min payment covers interest (2%/mo of 12M = 240k < 600k)');
+  assert.ok(sched.length >= 24 && sched.length <= 30, 'roughly 24-30 months, got ' + sched.length);
+  assert.equal(sched[sched.length-1].balanceAfter, 0, 'fully paid at the end');
+  const totalInterest = sched.reduce((s,m)=>s+m.interest,0);
+  assert.ok(totalInterest > 2000000, 'accrues real interest over the life');
+});
+
+test('Long-term loan with future startDate begins that month, not now', () => {
+  const debt = { id:'L2', name:'Préstamo', totalAmount:6000000, paidAmount:0, minimumPayment:500000, interestRate:0, paymentDay:15, startDate:'2026-10-15' };
+  const sched = simulateDebtPayoff(debt, new Date(2026,6,1)); // July
+  assert.equal(sched[0].year, 2026);
+  assert.equal(sched[0].monthIdx, 9, 'first payment in October (idx 9)');
+  assert.equal(sched.length, 12, '6M / 500k = 12 cuotas');
 });
 
 console.log(`\n${passed} pass, ${failed} fail`);

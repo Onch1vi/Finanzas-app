@@ -1150,12 +1150,78 @@ function simulateMonthDaily(data, today = new Date()) {
     events.push({ date: new Date(monthEnd), amount: -savContrib, name: 'Ahorro del mes', kind: 'savings', key, confirmed: !!confirms[key] });
   }
 
+  // PLANS that hit cash THIS month (purchases, plan savings goals, loan cuotas,
+  // lifestyle changes). Without this, adding a plan would silently NOT affect the
+  // real cash view. Each becomes a dated, confirmable event with a signed amount.
+  (data.plans || []).forEach(plan => {
+    if (plan.active === false) return;
+    const ps = plan.startDate ? parseLocalDate(plan.startDate) : null;
+    if (!ps || isNaN(ps)) return;
+    const inThisMonth = ps.getFullYear() === t.getFullYear() && ps.getMonth() === t.getMonth();
+    const startedByNow = (ps.getFullYear() < t.getFullYear()) || (ps.getFullYear() === t.getFullYear() && ps.getMonth() <= t.getMonth());
+    const evDate = inThisMonth ? ps : new Date(t.getFullYear(), t.getMonth(), 1);
+    const push = (suffix, amount, name) => {
+      if (!amount) return;
+      const key = `plan-${plan.id}-${suffix}-${monthKey}`;
+      events.push({ date: evDate, amount, name, kind: 'plan', key, confirmed: !!confirms[key] });
+    };
+    if (plan.type === 'purchase' && inThisMonth) {
+      if (plan.financing === 'loan') {
+        // The purchase itself is covered by the loan (net 0 cash); only extra fees hit now
+        push('extra', -(plan.penaltyCost || 0), `${plan.name} (gastos)`);
+      } else {
+        push('buy', -((plan.cost || 0) + (plan.penaltyCost || 0)), plan.name);
+      }
+    }
+    if (plan.type === 'purchase' && plan.financing === 'loan') {
+      // Loan cuota if a payment lands this month (after grace)
+      const grace = plan.graceMonths || 0;
+      const first = new Date(ps.getFullYear(), ps.getMonth() + grace, 1);
+      const last = new Date(ps.getFullYear(), ps.getMonth() + grace + (plan.loanMonths || 12) - 1, 1);
+      const thisM = new Date(t.getFullYear(), t.getMonth(), 1);
+      if (thisM >= first && thisM <= last) {
+        const cuota = calcLoanPayment(plan.cost || 0, plan.loanRate || 0, plan.loanMonths || 12);
+        push('cuota', -Math.round(cuota), `Cuota ${plan.name}`);
+      }
+    }
+    if (plan.type === 'savings' && inThisMonth) {
+      push('goal', -(plan.cost || 0), `Meta: ${plan.name}`);
+    }
+    if (plan.type === 'lifestyle' && startedByNow && plan.monthlyDelta) {
+      // Recurring monthly change (+ = you save/earn, − = costs more)
+      push('delta', plan.monthlyDelta, plan.name);
+      if (inThisMonth && (plan.oneTimeCost || plan.penaltyCost)) {
+        push('setup', -((plan.oneTimeCost || 0) + (plan.penaltyCost || 0)), `${plan.name} (inicial)`);
+      }
+    }
+  });
+
   events.sort((a, b) => a.date - b.date);
 
-  // Compute today's "real balance" = startingCash + (sum of confirmed events with date <= today)
-  // We treat confirmed events as having actually happened regardless of date.
+  // Compute today's "real balance" from the CONFIRMATIONS ledger, NOT from the
+  // re-derived events. Critical: when a debt/expense is marked paid, paidAmount
+  // rises and that debt drops out of `events` (remaining <= 0) — so summing
+  // confirmed events would "forget" the money that left and the balance would
+  // never decrease. The confirmations map is the durable record of what actually
+  // moved (with the applied amount), so we sum that instead.
+  //
+  // balanceUpdatedAt acts as a baseline: anything confirmed BEFORE the user last
+  // set "tu plata hoy" is already baked into that figure and must not be counted
+  // again. Confirmations at/after that timestamp adjust the balance live.
+  const balanceUpdatedAt = (data.savings && data.savings.balanceUpdatedAt) || '';
   let realBalanceToday = startingCash;
-  events.forEach(ev => { if (ev.confirmed) realBalanceToday += ev.amount; });
+  Object.entries(confirms).forEach(([key, c]) => {
+    if (!c) return;
+    if (balanceUpdatedAt && c.confirmedAt && c.confirmedAt < balanceUpdatedAt) return; // already in the declared balance
+    if (key.startsWith('plan-')) {
+      // Plans store a SIGNED delta (purchases negative, income-boosting positive)
+      realBalanceToday += (c.delta != null ? c.delta : -(c.amount || 0));
+    } else {
+      const amt = (c.appliedAmount != null ? c.appliedAmount : c.amount) || 0;
+      if (key.startsWith('inc-')) realBalanceToday += amt;   // income received
+      else realBalanceToday -= amt;                          // exp- / debt- / sav- left the account
+    }
+  });
 
   // Walk day by day from today to month end, applying *pending* events on their date.
   // Already-confirmed events are baked into realBalanceToday and do NOT reapply.
@@ -1229,7 +1295,8 @@ function simulateMonthDaily(data, today = new Date()) {
     events,
     overdueCount: overduePending.length,
     pendingCount: futurePending.length,
-    confirmedCount: events.filter(ev => ev.confirmed).length,
+    // Count from the confirmations ledger (paid-off debts drop out of `events`)
+    confirmedCount: Object.keys(confirms).length,
     monthKey,
   };
 }
@@ -2838,7 +2905,7 @@ const CHECKLIST_GROUPS = [
   { id: 'personal', label: 'Pagos personales', cats: ['subscriptions', 'leisure', 'health', 'other-expense'] },
 ];
 
-function CycleChecklist({ data, currency, hideAmounts, projection, sim, onConfirm, onConfirmDebt, onConfirmSavings }) {
+function CycleChecklist({ data, currency, hideAmounts, projection, sim, onConfirm, onConfirmDebt, onConfirmSavings, onConfirmPlan }) {
   const today = new Date();
   const year = today.getFullYear(), monthIdx = today.getMonth();
   const monthKey = `${year}-${String(monthIdx + 1).padStart(2, '0')}`;
@@ -2923,6 +2990,17 @@ function CycleChecklist({ data, currency, hideAmounts, projection, sim, onConfir
     });
   }
 
+  // Plans that cost cash this month (from the sim's plan events; outflows only)
+  const planItems = ((sim && sim.events) || [])
+    .filter(ev => ev.kind === 'plan' && ev.amount < 0)
+    .map(ev => ({
+      id: ev.key, confirmKey: ev.key,
+      name: ev.name, note: 'plan',
+      amount: -ev.amount, // positive magnitude for display/totals
+      kind: 'plan', delta: ev.amount, // signed for the handler
+    }));
+  if (planItems.length > 0) sections.push({ id: 'planes', label: 'Planes y compras', items: planItems });
+
   if (sections.length === 0) return null;
 
   const allItems = sections.flatMap(s => s.items);
@@ -2942,6 +3020,7 @@ function CycleChecklist({ data, currency, hideAmounts, projection, sim, onConfir
   const toggle = (item) => {
     if (item.kind === 'debt') onConfirmDebt(item.debtId, item.amount, monthKey);
     else if (item.kind === 'savings') onConfirmSavings(monthKey, item.amount);
+    else if (item.kind === 'plan') { if (onConfirmPlan) onConfirmPlan(item.confirmKey, monthKey, item.delta, item.name); }
     else onConfirm(item.confirmKey, { monthKey, amount: item.amount, name: item.name });
   };
 
@@ -3077,7 +3156,7 @@ function PersonalNotesCard({ notes, onSave }) {
   );
 }
 
-function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTransaction, onConfirm, onConfirmDebt, onUpdateSavings, onConfirmSavings, onSaveNotes }) {
+function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTransaction, onConfirm, onConfirmDebt, onUpdateSavings, onConfirmSavings, onConfirmPlan, onSaveNotes }) {
   const { debts, incomes, expenses, transactions } = data;
 
   const totalDebt = useMemo(() => debts.filter(d => !d.archived).reduce((s, d) => s + Math.max(0, d.totalAmount - (d.paidAmount || 0)), 0), [debts]);
@@ -3627,7 +3706,7 @@ function Dashboard({ data, currency, hideAmounts, onNavigate, onPayDebt, onAddTr
       </div>
 
       {/* === CYCLE CHECKLIST: the user's notepad as a living widget === */}
-      <CycleChecklist data={data} currency={currency} hideAmounts={hideAmounts} projection={projection} sim={dailySim} onConfirm={onConfirm} onConfirmDebt={onConfirmDebt} onConfirmSavings={onConfirmSavings} />
+      <CycleChecklist data={data} currency={currency} hideAmounts={hideAmounts} projection={projection} sim={dailySim} onConfirm={onConfirm} onConfirmDebt={onConfirmDebt} onConfirmSavings={onConfirmSavings} onConfirmPlan={onConfirmPlan} />
 
       {/* === REAL BALANCE TODAY: live cash on hand + day-by-day simulation === */}
       <RealBalanceCard sim={dailySim} savings={data.savings} currency={currency} hideAmounts={hideAmounts} onNavigate={onNavigate} onSetBalance={(amount) => onUpdateSavings && onUpdateSavings({ currentBalance: amount, balanceUpdatedAt: new Date().toISOString() })} />
@@ -7808,6 +7887,31 @@ function FinanzasApp() {
     setToast(confirmed ? 'Ahorro del mes guardado 💰' : 'Ahorro desmarcado');
     if (confirmed) fireConfetti({ count: 90 });
   };
+  // Confirm/unconfirm a plan cash-event (purchase, plan-savings, loan cuota,
+  // lifestyle change). Stores a SIGNED delta so realBalanceToday applies the
+  // right direction. If the plan is a savings goal, also move it into savings.current.
+  const handleConfirmPlan = (key, monthKey, delta, name) => {
+    let confirmed = false;
+    updateData(prev => {
+      const monthData = prev.confirmations[monthKey] || {};
+      const next = { ...monthData };
+      let savings = prev.savings;
+      const isGoal = /-goal-/.test(key);
+      if (next[key]) {
+        // unconfirm
+        if (isGoal) savings = { ...prev.savings, current: Math.max(0, (prev.savings.current || 0) - Math.abs(delta)) };
+        delete next[key];
+        confirmed = false;
+      } else {
+        if (isGoal) savings = { ...prev.savings, current: (prev.savings.current || 0) + Math.abs(delta) };
+        next[key] = { confirmedAt: new Date().toISOString(), delta, name };
+        confirmed = true;
+      }
+      return { ...prev, savings, confirmations: { ...prev.confirmations, [monthKey]: next } };
+    });
+    setToast(confirmed ? 'Movimiento de plan confirmado' : 'Marca quitada');
+    if (confirmed && delta < 0) fireConfetti({ count: 50 });
+  };
   const handleSaveNotes = (text) => {
     updateData(prev => ({ ...prev, userNotes: text }));
     setToast('Anotación guardada');
@@ -7971,7 +8075,7 @@ function FinanzasApp() {
       {(() => {
         const screens = (
           <>
-            {tab === 'home' && <Dashboard data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onNavigate={setTab} onPayDebt={(d) => setPayDebtSheet(d)} onAddTransaction={(t) => setQuickAdd(t)} onConfirm={handleConfirm} onConfirmDebt={handleConfirmDebtPayment} onUpdateSavings={handleUpdateSavings} onConfirmSavings={handleConfirmSavings} onSaveNotes={handleSaveNotes} />}
+            {tab === 'home' && <Dashboard data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onNavigate={setTab} onPayDebt={(d) => setPayDebtSheet(d)} onAddTransaction={(t) => setQuickAdd(t)} onConfirm={handleConfirm} onConfirmDebt={handleConfirmDebtPayment} onUpdateSavings={handleUpdateSavings} onConfirmSavings={handleConfirmSavings} onConfirmPlan={handleConfirmPlan} onSaveNotes={handleSaveNotes} />}
             {tab === 'debts' && <DebtsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveDebt} onDelete={handleDeleteDebt} onArchive={handleArchiveDebt} onPay={handlePayDebt} />}
             {tab === 'movements' && <MovementsScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onSave={handleSaveMovement} onDelete={handleDeleteMovement} onBulkAdd={handleBulkAddExpenses} onSetBudget={handleSetBudget} />}
             {tab === 'projection' && <PlanesScreen data={data} currency={data.user.currency} hideAmounts={data.settings.hideAmounts} onUpdateSavings={handleUpdateSavings} onSavePlan={handleSavePlan} onDeletePlan={handleDeletePlan} />}
